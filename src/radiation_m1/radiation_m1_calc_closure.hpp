@@ -37,10 +37,10 @@ KOKKOS_INLINE_FUNCTION void calc_closure(
                   m1_params);
     return;
   }
-  if (closure_type == Minerbo) {
+  if (closure_type == Minerbo || closure_type == Kershaw) {
     // Newton-Raphson rootfinder (opt-in via closure_solver = newton).
     // Seeded with the relativistic-aberration guess xi0 = |F - v E| / E.
-    if (m1_params.closure_solver == ClosureNewton) {
+    if (closure_type == Minerbo && m1_params.closure_solver == ClosureNewton) {
       AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Hg_d{};
       for (int a = 0; a < 4; ++a) {
         Hg_d(a) = F_d(a) - v_d(a) * E;
@@ -67,7 +67,7 @@ KOKKOS_INLINE_FUNCTION void calc_closure(
     // Initialize rootfinder
     MathSignal ierr =
         BrentInitialize(BrentFunc, x_lo, x_hi, root, state, g_dd, g_uu, n_d, w_lorentz,
-                        u_u, v_d, proj_ud, E, F_d, m1_params, m1_params.closure_type);
+                        u_u, v_d, proj_ud, E, F_d, m1_params, closure_type);
 
     // no root, most likely due to high velocities, use simple approximation
     if (ierr == LinalgEinval) {
@@ -92,7 +92,7 @@ KOKKOS_INLINE_FUNCTION void calc_closure(
     do {
       ++iter;
       ierr = BrentIterate(BrentFunc, x_lo, x_hi, root, state, g_dd, g_uu, n_d, w_lorentz,
-                          u_u, v_d, proj_ud, E, F_d, m1_params, m1_params.closure_type);
+                          u_u, v_d, proj_ud, E, F_d, m1_params, closure_type);
 
       // Some nans in the evaluation. This should not happen.
       if (ierr != LinalgSuccess) {

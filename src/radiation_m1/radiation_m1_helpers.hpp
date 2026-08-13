@@ -131,28 +131,22 @@ KOKKOS_INLINE_FUNCTION
 void assemble_fnu(const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &u_u,
                   const Real &J,
                   const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &H_u,
-                  AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &fnu_u,
-                  const RadiationM1Params &params) {
+                  AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &fnu_u) {
+  // Keep H/J whenever J is finite and strictly positive, including J at the
+  // radiation floor, so that fnu and Gamma use the same criterion.
+  const bool use_flux = Kokkos::isfinite(J) && (J > 0.0);
   for (int a = 0; a < 4; ++a) {
-    fnu_u(a) = u_u(a) + (J > params.rad_E_floor ? H_u(a) / J : 0);
+    fnu_u(a) = u_u(a) + (use_flux ? H_u(a) / J : 0.0);
   }
 }
 
 //----------------------------------------------------------------------------------------
-//! \fn Real radiationm1::compute_Gamma
-//  \brief Compute the ratio of neutrino number densities in the lab and fluid
-//  frame
+//! \fn Real radiationm1::floor_number
+//  \brief Enforce a finite radiation-number floor
 KOKKOS_INLINE_FUNCTION
-Real compute_Gamma(const Real &W,
-                   const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &v_u,
-                   const Real &J, const Real &E,
-                   const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &F_d,
-                   const RadiationM1Params &params) {
-  if (E > params.rad_E_floor && J > params.rad_E_floor) {
-    const Real f_dot_v = Kokkos::fmin(tensor_dot(F_d, v_u) / E, 1 - params.rad_eps);
-    return W * (E / J) * (1 - f_dot_v);
-  }
-  return 1;
+Real floor_number(const Real &N, const RadiationM1Params &params) {
+  return Kokkos::isfinite(N) ? Kokkos::fmax(params.rad_N_floor, N)
+                             : params.rad_N_floor;
 }
 
 //----------------------------------------------------------------------------------------
@@ -296,18 +290,84 @@ void calc_rF_source(const Real &alp,
 }
 
 //----------------------------------------------------------------------------------------
+//! \fn bool radiationm1::enforce_comoving_moment_safety
+//  \brief Enforce finite, positive, and causal fluid-frame radiation moments without
+//  applying the Eulerian energy floor.
+KOKKOS_INLINE_FUNCTION
+bool enforce_comoving_moment_safety(
+    const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_uu, Real &J,
+    AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &H_d,
+    const RadiationM1Params &params) {
+  bool state_is_valid = Kokkos::isfinite(J) && (J > 0.0);
+  for (int a = 0; a < 4; ++a) {
+    state_is_valid = state_is_valid && Kokkos::isfinite(H_d(a));
+  }
+
+  const Real H2 = state_is_valid ? tensor_dot(g_uu, H_d, H_d) : 0.0;
+
+  // J or H itself is invalid: use the documented invalid-state fallback.
+  if (!state_is_valid || !Kokkos::isfinite(H2)) {
+    J = params.rad_E_floor;
+    for (int a = 0; a < 4; ++a) {
+      H_d(a) = 0.0;
+    }
+    return false;
+  }
+
+  // A finite positive J remains physical.  A finite H2 < 0 is a
+  // cancellation-corrupted, unresolved flux, so discard H without replacing J.
+  // This preserves absorption/emission through J.
+  if (H2 < 0.0) {
+    for (int a = 0; a < 4; ++a) {
+      H_d(a) = 0.0;
+    }
+    return false;
+  }
+
+  const Real lim = J * J * (1 - params.rad_eps);
+  if (H2 > lim) {
+    const Real fac = Kokkos::sqrt(lim / H2);
+    for (int a = 0; a < 4; ++a) {
+      H_d(a) *= fac;
+    }
+  }
+  return true;
+}
+
+//----------------------------------------------------------------------------------------
 //! \fn void radiationm1::apply_floor
-//  \brief Enforce that E > rad_E_floor and F_a F^a < (1 - rad_eps) E^2
+//  \brief Enforce the absolute floor and causal limit on Eulerian moments E and F_a.
+//  If E drops below rad_E_floor, F is zeroed (isotropic floor state), mirroring GRA.
 KOKKOS_INLINE_FUNCTION
 void apply_floor(const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_uu, Real &E,
                  AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &F_d,
                  const RadiationM1Params &params) {
-  E = Kokkos::fmax(params.rad_E_floor, E);
+  bool state_is_finite = Kokkos::isfinite(E);
+  for (int a = 0; a < 4; ++a) {
+    state_is_finite = state_is_finite && Kokkos::isfinite(F_d(a));
+  }
 
-  const Real F2 = tensor_dot(g_uu, F_d, F_d);
+  const Real F2 = state_is_finite ? tensor_dot(g_uu, F_d, F_d) : 0.0;
+  if (!state_is_finite || !Kokkos::isfinite(F2)) {
+    E = params.rad_E_floor;
+    for (int a = 0; a < 4; ++a) {
+      F_d(a) = 0.0;
+    }
+    return;
+  }
+
+  const bool E_below_floor = E < params.rad_E_floor;
+  E = Kokkos::fmax(params.rad_E_floor, E);
+  if (E_below_floor) {
+    for (int a = 0; a < 4; ++a) {
+      F_d(a) = 0.0;
+    }
+    return;
+  }
+
   const Real lim = E * E * (1 - params.rad_eps);
   if (F2 > lim) {
-    const Real fac = lim / F2;
+    const Real fac = Kokkos::sqrt(lim / F2);
     for (int a = 0; a < 4; ++a) {
       F_d(a) *= fac;
     }

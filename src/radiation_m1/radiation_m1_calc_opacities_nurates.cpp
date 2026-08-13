@@ -56,6 +56,11 @@ TaskStatus RadiationM1::CalcOpacityNurates_(Driver *pdrive, int stage) {
   int &is = indcs.is, &ie = indcs.ie;
   int &js = indcs.js, &je = indcs.je;
   int &ks = indcs.ks, &ke = indcs.ke;
+  int const is_op = is - 1, ie_op = ie + 1;
+  int const js_op = pmy_pack->pmesh->multi_d ? js - 1 : js;
+  int const je_op = pmy_pack->pmesh->multi_d ? je + 1 : je;
+  int const ks_op = pmy_pack->pmesh->three_d ? ks - 1 : ks;
+  int const ke_op = pmy_pack->pmesh->three_d ? ke + 1 : ke;
 
   auto nmb1 = pmy_pack->nmb_thispack - 1;
   auto &nspecies_ = nspecies;
@@ -110,8 +115,8 @@ TaskStatus RadiationM1::CalcOpacityNurates_(Driver *pdrive, int stage) {
   auto nurates_units = Primitive::MakeNGS();
 
   par_for(
-      "radiation_m1_calc_opacity_nurates", DevExeSpace(), 0, nmb1, ks, ke, js,
-      je, is, ie,
+      "radiation_m1_calc_opacity_nurates", DevExeSpace(), 0, nmb1, ks_op, ke_op,
+      js_op, je_op, is_op, ie_op,
       KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
         if (radiation_mask_(m, k, j, i)) {
           for (int nuidx = 0; nuidx < nspecies_; nuidx++) {
@@ -200,12 +205,21 @@ TaskStatus RadiationM1::CalcOpacityNurates_(Driver *pdrive, int stage) {
             AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> T_dd{};
             assemble_rT(n_d, E, F_d, P_dd, T_dd);
 
-            J[nuidx] = calc_J_from_rT(T_dd, u_u);
             AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> H_d{};
+            AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> H_u{};
+            J[nuidx] = calc_J_from_rT(T_dd, u_u);
             calc_H_from_rT(T_dd, u_u, proj_ud, H_d);
-            apply_floor(g_uu, J[nuidx], H_d, m1_params_);
-            Real Gamma =
-                compute_Gamma(w_lorentz, v_u, J[nuidx], E, F_d, m1_params_);
+            const bool comoving_state_is_valid = enforce_comoving_moment_safety(
+                g_uu, J[nuidx], H_d, m1_params_);
+            tensor_contract(g_uu, H_d, H_u);
+
+            const Real Gamma_candidate =
+                adm.alpha(m, k, j, i) * (u_u(0) + H_u(0) / J[nuidx]);
+            const Real Gamma = comoving_state_is_valid &&
+                                       Kokkos::isfinite(Gamma_candidate) &&
+                                       Gamma_candidate > 0.0
+                                   ? Gamma_candidate
+                                   : w_lorentz;
             rnnu[nuidx] =
                 u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i) / Gamma;
           }

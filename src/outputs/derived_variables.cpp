@@ -1383,59 +1383,71 @@ void BaseTypeOutput::ComputeDerivedVariable(std::string name, Mesh *pm) {
         Real J = calc_J_from_rT(T_dd, u_u);
         AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> H_d{};
         calc_H_from_rT(T_dd, u_u, proj_ud, H_d);
-        apply_floor(g_uu, J, H_d, params_);
+        const bool comoving_state_is_valid =
+            enforce_comoving_moment_safety(g_uu, J, H_d, params_);
 
         if (mode == 0) {
           dv(m,nuidx,k,j,i) = J * ene_conv;
-        } else if (mode == 1) {
-          AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> H_u{};
-          tensor_contract(g_uu, H_d, H_u);
-          dv(m,3*nuidx+0,k,j,i) = H_u(1) * ene_conv;
-          dv(m,3*nuidx+1,k,j,i) = H_u(2) * ene_conv;
-          dv(m,3*nuidx+2,k,j,i) = H_u(3) * ene_conv;
-        } else if (mode == 3) {
-          AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> H_u{};
-          AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> fnu_u{};
-          tensor_contract(g_uu, H_d, H_u);
-          assemble_fnu(u_u, J, H_u, fnu_u, params_);
-          dv(m,4*nuidx+0,k,j,i) = fnu_u(0);
-          dv(m,4*nuidx+1,k,j,i) = fnu_u(1);
-          dv(m,4*nuidx+2,k,j,i) = fnu_u(2);
-          dv(m,4*nuidx+3,k,j,i) = fnu_u(3);
-        } else if (mode == 4) {
-          Real nnu = 0.0;
-          if (nvars_ > M1_N_IDX) {
-            const Real N = u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i);
-            const Real Gamma = compute_Gamma(w_lorentz, v_u, J, E, F_d, params_);
-            nnu = N / Gamma;
-          }
-          bool j_ok = Kokkos::isfinite(J) && J > params_.rad_E_floor;
-          Real e_val = (j_ok && nnu > params_.rad_N_floor) ? J * ene_conv / nnu : 0.0;
-          dv(m,nuidx,k,j,i) = Kokkos::isfinite(e_val) ? e_val : 0.0;
-        } else if (mode == 5) {
-          Real nnu = 0.0;
-          if (nvars_ > M1_N_IDX) {
-            const Real N = u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i);
-            const Real Gamma = compute_Gamma(w_lorentz, v_u, J, E, F_d, params_);
-            nnu = N / Gamma;
-          }
-
-          Real gam = adm::SpatialDet(
-              adm.g_dd(m, 0, 0, k, j, i), adm.g_dd(m, 0, 1, k, j, i),
-              adm.g_dd(m, 0, 2, k, j, i), adm.g_dd(m, 1, 1, k, j, i),
-              adm.g_dd(m, 1, 2, k, j, i), adm.g_dd(m, 2, 2, k, j, i));
-          Real volform = Kokkos::sqrt(gam);
-
-          Real flux_fac = flux_factor(g_uu, J, H_d, params_.rad_E_floor);
-          dv(m,nuidx,k,j,i) = nnu * Kokkos::sqrt(flux_fac) / volform;
         } else {
-          Real nnu = 0.0;
-          if (nvars_ > M1_N_IDX) {
-            const Real N = u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i);
-            const Real Gamma = compute_Gamma(w_lorentz, v_u, J, E, F_d, params_);
-            nnu = N / Gamma;
+          AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> H_u{};
+          tensor_contract(g_uu, H_d, H_u);
+          if (mode == 1) {
+            dv(m,3*nuidx+0,k,j,i) = H_u(1) * ene_conv;
+            dv(m,3*nuidx+1,k,j,i) = H_u(2) * ene_conv;
+            dv(m,3*nuidx+2,k,j,i) = H_u(3) * ene_conv;
+          } else {
+            AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> fnu_u{};
+            assemble_fnu(u_u, J, H_u, fnu_u);
+            if (mode == 3) {
+              dv(m,4*nuidx+0,k,j,i) = fnu_u(0);
+              dv(m,4*nuidx+1,k,j,i) = fnu_u(1);
+              dv(m,4*nuidx+2,k,j,i) = fnu_u(2);
+              dv(m,4*nuidx+3,k,j,i) = fnu_u(3);
+            } else {
+              const Real Gamma_candidate = alp * fnu_u(0);
+              const Real Gamma =
+                  comoving_state_is_valid && Kokkos::isfinite(Gamma_candidate) &&
+                          Gamma_candidate > 0.0
+                      ? Gamma_candidate
+                      : w_lorentz;
+              if (mode == 4) {
+                Real nnu = 0.0;
+                if (nvars_ > M1_N_IDX) {
+                  const Real N =
+                      u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i);
+                  nnu = N / Gamma;
+                }
+                const bool j_ok = Kokkos::isfinite(J) && J > 0.0;
+                const Real e_val =
+                    (j_ok && nnu > params_.rad_N_floor) ? J * ene_conv / nnu : 0.0;
+                dv(m,nuidx,k,j,i) = Kokkos::isfinite(e_val) ? e_val : 0.0;
+              } else if (mode == 5) {
+                Real nnu = 0.0;
+                if (nvars_ > M1_N_IDX) {
+                  const Real N =
+                      u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i);
+                  nnu = N / Gamma;
+                }
+
+                Real gam = adm::SpatialDet(
+                    adm.g_dd(m, 0, 0, k, j, i), adm.g_dd(m, 0, 1, k, j, i),
+                    adm.g_dd(m, 0, 2, k, j, i), adm.g_dd(m, 1, 1, k, j, i),
+                    adm.g_dd(m, 1, 2, k, j, i), adm.g_dd(m, 2, 2, k, j, i));
+                Real volform = Kokkos::sqrt(gam);
+
+                Real flux_fac = flux_factor(g_uu, J, H_d, params_.rad_E_floor);
+                dv(m,nuidx,k,j,i) = nnu * Kokkos::sqrt(flux_fac) / volform;
+              } else {
+                Real nnu = 0.0;
+                if (nvars_ > M1_N_IDX) {
+                  const Real N =
+                      u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i);
+                  nnu = N / Gamma;
+                }
+                dv(m,nuidx,k,j,i) = nnu;
+              }
+            }
           }
-          dv(m,nuidx,k,j,i) = nnu;
         }
       }
     });

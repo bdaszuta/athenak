@@ -52,7 +52,7 @@ MathSignal prepare_sources(const Real q[4], SrcParams &src_params,
 
   src_params.J = calc_J_from_rT(src_params.T_dd, src_params.u_u);
   calc_H_from_rT(src_params.T_dd, src_params.u_u, src_params.proj_ud, src_params.H_d);
-  apply_floor(src_params.g_uu, src_params.J, src_params.H_d, params_);
+  enforce_comoving_moment_safety(src_params.g_uu, src_params.J, src_params.H_d, params_);
 
   calc_rad_sources(src_params.eta, src_params.kabs, src_params.kscat, src_params.u_d,
                    src_params.J, src_params.H_d, src_params.S_d);
@@ -136,24 +136,20 @@ SrcSignal source_update_ll(
     const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &v_d,
     const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &v_u,
     const AthenaPointTensor<Real, TensorSymm::NONE, 4, 2> &proj_ud, const Real &W,
-    const Real &Eold, const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &Fold_d,
+    const Real &, const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &,
     const Real &Estar, const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &Fstar_d,
     const Real &eta, const Real &kabs, const Real &kscat, Real &chi, Real &Enew,
     AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &Fnew_d,
     const RadiationM1Params &m1_params, const RadiationM1Closure &closure_type) {
   SrcParams src_params(cdt, alp, g_dd, g_uu, n_d, n_u, gamma_ud, u_d, u_u, v_d, v_u,
                        proj_ud, W, Estar, Fstar_d, chi, eta, kabs, kscat);
-  // old solution
-  Real qold[] = {Eold, Fold_d(1), Fold_d(2), Fold_d(3)};
-  Real xold[4];
-  for (int i = 0; i < 4; i++) {
-    xold[i] = qold[i];
-  }
 
   // non stiff limit, explicit update
   if (cdt * kabs < m1_params.source_thin_limit &&
       cdt * kscat < m1_params.source_thin_limit) {
-    prepare(BrentFunc, xold, src_params, m1_params, closure_type);
+    const Real qstar[] = {src_params.Estar, src_params.Fstar_d(1),
+                          src_params.Fstar_d(2), src_params.Fstar_d(3)};
+    prepare(BrentFunc, qstar, src_params, m1_params, closure_type);
     explicit_update(src_params, Enew, Fnew_d);
 
     Real q[4] = {Enew, Fnew_d(1), Fnew_d(2), Fnew_d(3)};
@@ -225,6 +221,32 @@ SrcSignal source_update_ll(
                              m1_params.source_epsabs, m1_params.source_epsrel);
   } while (ierr == LinalgContinue);
 
+  // A small dogleg step is not sufficient for convergence.  The source
+  // Jacobian treats chi as fixed while the residual can recompute chi(q), so a
+  // stalled iterate must not be returned as SrcOk.  hybridsj_params.f is kept
+  // consistent with hybridsj_params.x: initialization evaluates f(x), accepted
+  // steps copy f_trial together with x_trial, and rejected steps leave both
+  // unchanged.
+  for (int a = 0; a < M1_MULTIROOTS_DIM; ++a) {
+    const Real xstar =
+        (a == 0) ? src_params.Estar : src_params.Fstar_d(a);
+    const Real scale =
+        Kokkos::fmax(Kokkos::fabs(hybridsj_params.x[a]), Kokkos::fabs(xstar));
+    const Real tolerance =
+        m1_params.source_epsabs + m1_params.source_epsrel * scale;
+
+    if (!Kokkos::isfinite(hybridsj_params.f[a]) ||
+        Kokkos::fabs(hybridsj_params.f[a]) > tolerance) {
+#ifdef DEBUG_BUILD
+      Kokkos::printf(
+          "source_update: small step but large residual in component %d "
+          "(f=%.3e, tol=%.3e).\n",
+          a, hybridsj_params.f[a], tolerance);
+#endif
+      return SrcFail;
+    }
+  }
+
   Enew = hybridsj_params.x[0];
   Fnew_d(1) = hybridsj_params.x[1];
   Fnew_d(2) = hybridsj_params.x[2];
@@ -261,13 +283,15 @@ SrcSignal source_update(
       BrentFunc, HybridsjFunc, cdt, alp, g_dd, g_uu, n_d, n_u, gamma_ud, u_d,
       u_u, v_d, v_u, proj_ud, W, Eold, Fold_d, Estar, Fstar_d, eta, kabs, kscat,
       chi, Enew, Fnew_d, m1_params, closure_type);
-  if (ierr != SrcOk && ierr != SrcThin && closure_type != Eddington) {
+  if (ierr == SrcFail && closure_type != Eddington) {
+    RadiationM1Params fallback_params = m1_params;
+    fallback_params.closure_type = Eddington;
     ierr = source_update_ll(BrentFunc, HybridsjFunc, cdt, alp, g_dd, g_uu, n_d,
-                            n_u, gamma_ud, u_d, u_u, v_d, v_u, proj_ud, W, Eold,
-                            Fold_d, Estar, Fstar_d, eta, kabs, kscat, chi, Enew,
-                            Fnew_d, m1_params, Eddington);
+                             n_u, gamma_ud, u_d, u_u, v_d, v_u, proj_ud, W, Eold,
+                             Fold_d, Estar, Fstar_d, eta, kabs, kscat, chi, Enew,
+                             Fnew_d, fallback_params, Eddington);
 #ifdef DEBUG_BUILD
-    if (ierr != SrcOk) {
+    if (ierr == SrcFail) {
       Kokkos::printf("source_update: The source solver has failed!\n");
     }
     else {

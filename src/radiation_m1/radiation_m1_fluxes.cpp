@@ -111,15 +111,25 @@ void CalcFlux(const int m, const int k, const int j, const int i, const int nuid
 
   Real J = calc_J_from_rT(T_dd, u_u);
   calc_H_from_rT(T_dd, u_u, proj_ud, H_d);
-  apply_floor(g_uu, J, H_d, params_);
+  const bool comoving_state_is_valid =
+      enforce_comoving_moment_safety(g_uu, J, H_d, params_);
   tensor_contract(g_uu, H_d, H_u);
 
   Real N{};
   if (nspecies_ > 1) {
     N = u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i);
   }
-  assemble_fnu(u_u, J, H_u, fnu_u, params_);
-  const Real Gamma = compute_Gamma(w_lorentz, v_u, J, E, F_d, params_);
+  assemble_fnu(u_u, J, H_u, fnu_u);
+
+  // Gamma is the Eulerian 0-component of the number current fnu = u + H/J.
+  // It must be evaluated from the SAME (possibly safety-rescaled) H used for
+  // the flux; the E/F/J identity is stale after H has been rescaled.
+  const Real Gamma_candidate = adm.alpha(m, k, j, i) * fnu_u(0);
+  const Real Gamma = comoving_state_is_valid &&
+                             Kokkos::isfinite(Gamma_candidate) &&
+                             Gamma_candidate > 0.0
+                         ? Gamma_candidate
+                         : w_lorentz;
 
   // Note that nnu is densitized here
   Real nnu{};
@@ -264,7 +274,7 @@ TaskStatus RadiationM1::CalculateFluxes(Driver *pdrive, int stage) {
                 0.5 * (abs_1_(m, nuidx, k, j - 1, i) + abs_1_(m, nuidx, k, j, i) +
                        scat_1_(m, nuidx, k, j - 1, i) + scat_1_(m, nuidx, k, j, i));
           }
-          Real A_jp12 = Kokkos::fmin(1., 1. / (kappa_ave * mbsize.d_view(m).dx1));
+          Real A_jp12 = Kokkos::fmin(1., 1. / (kappa_ave * mbsize.d_view(m).dx2));
 
           for (int momidx = 0; momidx < nvars_; ++momidx) {
             const Real ujm = u0_(m, CombinedIdx(nuidx, momidx, nvars_), k, j - 2, i);
@@ -330,7 +340,7 @@ TaskStatus RadiationM1::CalculateFluxes(Driver *pdrive, int stage) {
                 0.5 * (abs_1_(m, nuidx, k - 1, j, i) + abs_1_(m, nuidx, k, j, i) +
                        scat_1_(m, nuidx, k - 1, j, i) + scat_1_(m, nuidx, k, j, i));
           }
-          Real A_jp12 = Kokkos::fmin(1., 1. / (kappa_ave * mbsize.d_view(m).dx1));
+          Real A_jp12 = Kokkos::fmin(1., 1. / (kappa_ave * mbsize.d_view(m).dx3));
 
           for (int momidx = 0; momidx < nvars_; ++momidx) {
             const Real ujm = u0_(m, CombinedIdx(nuidx, momidx, nvars_), k - 2, j, i);

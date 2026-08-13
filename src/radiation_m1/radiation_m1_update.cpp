@@ -297,7 +297,6 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
 
         // [E] Compute contribution from flux and geometric sources
         Real rEFN[M1_TOTAL_NUM_SPECIES][5];
-        Real DDxp[M1_TOTAL_NUM_SPECIES];
         for (int nuidx = 0; nuidx < nspecies_; nuidx++) {
           // [E.1: Contribution from fluxes]
           for (int var = 0; var < nvars_; ++var) {
@@ -368,9 +367,74 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
 
         // [F] Compute contribution from matter sources
         Real DrEFN[M1_TOTAL_NUM_SPECIES][5]{};
+        Real source_pred[M1_TOTAL_NUM_SPECIES][5]{};
+        Real source_base[M1_TOTAL_NUM_SPECIES][5]{};
+        bool source_step_is_finite = true;
+        for (int nuidx = 0; nuidx < nspecies_; ++nuidx) {
+          const Real Epred =
+              u1_(m, CombinedIdx(nuidx, M1_E_IDX, nvars_), k, j, i) +
+              beta_dt * rEFN[nuidx][M1_E_IDX];
+          source_pred[nuidx][M1_E_IDX] = Epred;
+
+          const Real Fxpred =
+              u1_(m, CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, i) +
+              beta_dt * rEFN[nuidx][M1_FX_IDX];
+          const Real Fypred =
+              u1_(m, CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, i) +
+              beta_dt * rEFN[nuidx][M1_FY_IDX];
+          const Real Fzpred =
+              u1_(m, CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, j, i) +
+              beta_dt * rEFN[nuidx][M1_FZ_IDX];
+          source_pred[nuidx][M1_FX_IDX] = Fxpred;
+          source_pred[nuidx][M1_FY_IDX] = Fypred;
+          source_pred[nuidx][M1_FZ_IDX] = Fzpred;
+
+          Real Ebase = Epred;
+          AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Fbase_d{};
+          pack_F_d(beta_u(1), beta_u(2), beta_u(3), Fxpred, Fypred, Fzpred,
+                   Fbase_d);
+          const Real Fpred2 = tensor_dot(g_uu, Fbase_d, Fbase_d);
+          source_step_is_finite =
+              source_step_is_finite && Kokkos::isfinite(Fpred2);
+          apply_floor(g_uu, Ebase, Fbase_d, params_);
+          source_base[nuidx][M1_E_IDX] = Ebase;
+          source_base[nuidx][M1_FX_IDX] = Fbase_d(1);
+          source_base[nuidx][M1_FY_IDX] = Fbase_d(2);
+          source_base[nuidx][M1_FZ_IDX] = Fbase_d(3);
+          if (nspecies_ > 1) {
+            const Real Npred =
+                u1_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i) +
+                beta_dt * rEFN[nuidx][M1_N_IDX];
+            source_pred[nuidx][M1_N_IDX] = Npred;
+            source_base[nuidx][M1_N_IDX] = floor_number(Npred, params_);
+          }
+
+          const int nsrc = (nspecies_ > 1) ? 5 : 4;
+          for (int var = 0; var < nsrc; ++var) {
+            source_step_is_finite =
+                source_step_is_finite &&
+                Kokkos::isfinite(source_pred[nuidx][var]);
+          }
+        }
         Real theta{};
         if (params_.matter_sources) {
           for (int nuidx = 0; nuidx < nspecies_; nuidx++) {
+            bool source_coeffs_are_finite =
+                Kokkos::isfinite(volform * eta_1_(m, nuidx, k, j, i)) &&
+                Kokkos::isfinite(abs_1_(m, nuidx, k, j, i)) &&
+                Kokkos::isfinite(scat_1_(m, nuidx, k, j, i));
+            if (nspecies_ > 1) {
+              source_coeffs_are_finite =
+                  source_coeffs_are_finite &&
+                  Kokkos::isfinite(volform * eta_0_(m, nuidx, k, j, i)) &&
+                  Kokkos::isfinite(abs_0_(m, nuidx, k, j, i));
+            }
+            source_step_is_finite =
+                source_step_is_finite && source_coeffs_are_finite;
+            if (!source_coeffs_are_finite) {
+              continue;
+            }
+
             if (params_.src_update == Explicit) {
               // radiation fields
               AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> F_d{};
@@ -394,11 +458,21 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
               AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> H_u{};
               Real J = calc_J_from_rT(T_dd, u_u);
               calc_H_from_rT(T_dd, u_u, proj_ud, H_d);
-              apply_floor(g_uu, J, H_d, params_);
+              const bool comoving_state_is_valid =
+                  enforce_comoving_moment_safety(g_uu, J, H_d, params_);
 
               tensor_contract(g_uu, H_d, H_u);
-              const Real Gamma =
-                  compute_Gamma(w_lorentz, v_u, J, E, F_d, params_);
+
+              // Gamma is the Eulerian 0-component of the number current
+              // fnu = u + H/J, evaluated from the same (possibly
+              // safety-rescaled) H used for the number source.
+              const Real Gamma_candidate =
+                  adm.alpha(m, k, j, i) * (u_u(0) + H_u(0) / J);
+              const Real Gamma = comoving_state_is_valid &&
+                                         Kokkos::isfinite(Gamma_candidate) &&
+                                         Gamma_candidate > 0.0
+                                     ? Gamma_candidate
+                                     : w_lorentz;
 
               // Compute radiation sources
               calc_rad_sources(eta_1_(m, nuidx, k, j, i) * volform,
@@ -426,27 +500,23 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
               // Boost to the fluid frame, compute fluid matter interaction and
               // boost back. Use these values for implicit solve
 
-              // advect radiation
-              Real Estar =
-                  u1_(m, CombinedIdx(nuidx, M1_E_IDX, nvars_), k, j, i) +
-                  beta_dt * rEFN[nuidx][M1_E_IDX];
+              // Use the physicalized transport/geometric predictor to build a
+              // closure-safe analytic source seed.
+              const Real Estar = source_base[nuidx][M1_E_IDX];
               AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Fstar_d{};
               pack_F_d(beta_u(1), beta_u(2), beta_u(3),
-                       u1_(m, CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, i) +
-                           beta_dt * rEFN[nuidx][M1_FX_IDX],
-                       u1_(m, CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, i) +
-                           beta_dt * rEFN[nuidx][M1_FY_IDX],
-                       u1_(m, CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, j, i) +
-                           beta_dt * rEFN[nuidx][M1_FZ_IDX],
-                       Fstar_d);
-              apply_floor(g_uu, Estar, Fstar_d, params_);
-              Real Nstar{};
-              if (nspecies_ > 1) {
-                Nstar = Kokkos::fmax(
-                    u1_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i) +
-                        beta_dt * rEFN[nuidx][M1_N_IDX],
-                    params_.rad_N_floor);
-              }
+                       source_base[nuidx][M1_FX_IDX],
+                       source_base[nuidx][M1_FY_IDX],
+                       source_base[nuidx][M1_FZ_IDX], Fstar_d);
+              const Real Nstar = source_base[nuidx][M1_N_IDX];
+
+              const Real Epred = source_pred[nuidx][M1_E_IDX];
+              AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Fpred_d{};
+              pack_F_d(beta_u(1), beta_u(2), beta_u(3),
+                       source_pred[nuidx][M1_FX_IDX],
+                       source_pred[nuidx][M1_FY_IDX],
+                       source_pred[nuidx][M1_FZ_IDX], Fpred_d);
+              const Real Npred = source_pred[nuidx][M1_N_IDX];
 
               // Compute quantities in the fluid frame
               AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> P_dd{};
@@ -477,11 +547,17 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
                 Hnew_d(0) -= Hnew_d(a) * (u_u(a) / u_u(0));
               }
 
-              // Update Tmunu
+              // Update Tmunu.  Repair J/H before using them to build both xi
+              // and Tmunu; a finite positive comoving J remains valid even
+              // when J <= rad_E_floor.
+              const bool comoving_state_is_valid =
+                  enforce_comoving_moment_safety(g_uu, Jnew, Hnew_d, params_);
               const Real H2 = tensor_dot(g_uu, Hnew_d, Hnew_d);
               const Real normH = Kokkos::sqrt(H2);
               const Real inormH = (normH > 0. ? 1. / normH : 0.);
-              const Real xi = normH*(Jnew > params_.rad_E_floor ? 1./Jnew : 0.);
+              const Real xi = comoving_state_is_valid
+                                  ? normH / Jnew
+                                  : 0.;
               chi_(m, nuidx, k, j, i) = closure_fun(xi, params_.closure_type);
 
               const Real dthick = 3. * (1. - chi_(m, nuidx, k, j, i)) / 2.;
@@ -504,19 +580,34 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
               calc_H_from_rT(rT_dd, n_u, gamma_ud, Fnew_d);
               apply_floor(g_uu, Enew, Fnew_d, params_);
 
-              auto src_signal = source_update(
+              const Real E_analytic = Enew;
+              AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> F_analytic_d{};
+              for (int a = 0; a < 4; ++a) {
+                F_analytic_d(a) = Fnew_d(a);
+              }
+              const Real chi_analytic = chi_(m, nuidx, k, j, i);
+
+              const SrcSignal src_signal = source_update(
                   BrentFunc_, HybridsjFunc_, beta_dt, adm.alpha(m, k, j, i),
                   g_dd, g_uu, n_d, n_u, gamma_ud, u_d, u_u, v_d, v_u, proj_ud,
-                  w_lorentz, Estar, Fstar_d, Estar, Fstar_d,
+                  w_lorentz, Estar, Fstar_d, Epred, Fpred_d,
                   volform * eta_1_(m, nuidx, k, j, i),
                   abs_1_(m, nuidx, k, j, i), scat_1_(m, nuidx, k, j, i),
                   chi_(m, nuidx, k, j, i), Enew, Fnew_d, params_,
                   params_.closure_type);
+              if (src_signal == SrcFail) {
+                Enew = E_analytic;
+                for (int a = 0; a < 4; ++a) {
+                  Fnew_d(a) = F_analytic_d(a);
+                }
+                chi_(m, nuidx, k, j, i) = chi_analytic;
+              }
               apply_floor(g_uu, Enew, Fnew_d, params_);
 
-              // Update closure
-              apply_closure(g_dd, g_uu, n_d, w_lorentz, u_u, v_d, proj_ud, Enew,
-                            Fnew_d, chi_(m, nuidx, k, j, i), P_dd, params_);
+              // Update closure for the accepted nonlinear or analytic state.
+              calc_closure(BrentFunc_, g_dd, g_uu, n_d, w_lorentz, u_u, v_d,
+                           proj_ud, Enew, Fnew_d, chi_(m, nuidx, k, j, i), P_dd,
+                           params_, params_.closure_type);
 
               // Compute new radiation energy density in the fluid frame
               AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> T_dd{};
@@ -524,15 +615,40 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
               Jnew = calc_J_from_rT(T_dd, u_u);
 
               // Compute changes in radiation energy and momentum
-              DrEFN[nuidx][M1_E_IDX] = Enew - Estar;
-              DrEFN[nuidx][M1_FX_IDX] = Fnew_d(1) - Fstar_d(1);
-              DrEFN[nuidx][M1_FY_IDX] = Fnew_d(2) - Fstar_d(2);
-              DrEFN[nuidx][M1_FZ_IDX] = Fnew_d(3) - Fstar_d(3);
+              DrEFN[nuidx][M1_E_IDX] = Enew - Epred;
+              DrEFN[nuidx][M1_FX_IDX] = Fnew_d(1) - Fpred_d(1);
+              DrEFN[nuidx][M1_FY_IDX] = Fnew_d(2) - Fpred_d(2);
+              DrEFN[nuidx][M1_FZ_IDX] = Fnew_d(3) - Fpred_d(3);
 
               if (nspecies_ > 1) {
-                // Compute updated Gamma
-                const Real Gamma =
-                    compute_Gamma(w_lorentz, v_u, Jnew, Enew, Fnew_d, params_);
+                AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Hstar_u{};
+                const bool star_number_state_is_valid =
+                    enforce_comoving_moment_safety(g_uu, Jstar, Hstar_d, params_);
+                tensor_contract(g_uu, Hstar_d, Hstar_u);
+
+                const Real Gamma_star_candidate =
+                    adm.alpha(m, k, j, i) * (u_u(0) + Hstar_u(0) / Jstar);
+                const Real Gamma_star =
+                    star_number_state_is_valid &&
+                            Kokkos::isfinite(Gamma_star_candidate) &&
+                            Gamma_star_candidate > 0.0
+                        ? Gamma_star_candidate
+                        : w_lorentz;
+
+                AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Hnumber_d{};
+                AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Hnumber_u{};
+                calc_H_from_rT(T_dd, u_u, proj_ud, Hnumber_d);
+                const bool number_state_is_valid =
+                    enforce_comoving_moment_safety(g_uu, Jnew, Hnumber_d, params_);
+                tensor_contract(g_uu, Hnumber_d, Hnumber_u);
+
+                const Real Gamma_candidate =
+                    adm.alpha(m, k, j, i) * (u_u(0) + Hnumber_u(0) / Jnew);
+                const Real Gamma = number_state_is_valid &&
+                                           Kokkos::isfinite(Gamma_candidate) &&
+                                           Gamma_candidate > 0.0
+                                       ? Gamma_candidate
+                                       : w_lorentz;
 
                 if (params_.source_therm_limit < 0 ||
                     beta_dt * abs_0_(m, nuidx, k, j, i) <
@@ -540,143 +656,239 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
                   //
                   // N^k+1 = N^* + dt ( eta - abs N^k+1 )
                   DrEFN[nuidx][M1_N_IDX] =
-                      (Nstar + beta_dt * adm.alpha(m, k, j, i) * volform *
+                      (Npred + beta_dt * adm.alpha(m, k, j, i) * volform *
                                    eta_0_(m, nuidx, k, j, i)) /
                           (1 + beta_dt * adm.alpha(m, k, j, i) *
                                    abs_0_(m, nuidx, k, j, i) / Gamma) -
-                      Nstar;
+                      Npred;
                 } else {
                   // The neutrino number density is updated assuming the
                   // neutrino average energies are those of the equilibrium
-                  const Real E =
-                      u0_(m, CombinedIdx(nuidx, M1_E_IDX, nvars_), k, j, i);
-                  const Real N =
-                      u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i);
-                  AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> F_d{};
-                  pack_F_d(
-                      beta_u(1), beta_u(2), beta_u(3),
-                      u0_(m, CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, i),
-                      u0_(m, CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, i),
-                      u0_(m, CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, j, i),
-                      F_d);
-                  const Real nueave =
-                      w_lorentz * (E - tensor_dot(F_d, v_u)) / N;
+                  const Real nueave = Gamma_star * Jstar / Nstar;
                   DrEFN[nuidx][M1_N_IDX] =
-                      (nueave > 0 ? Gamma * Jnew / nueave - Nstar : 0.0);
+                      (nueave > 0 ? Gamma * Jnew / nueave - Npred : 0.0);
                 }
               }
-            }
-            // fluid lepton sources
-            if (nspecies_ > 1) {
-              DDxp[nuidx] = -mb * (DrEFN[nuidx][M1_N_IDX] * (nuidx == 0) -
-                                   DrEFN[nuidx][M1_N_IDX] * (nuidx == 1));
             }
           }
 
-          // [G] Limit sources
-          theta = 1.0;
-          if (params_.theta_limiter && params_.source_limiter >= 0) {
-            const Real tau = (ismhd_ || ishydro_) ? umhd0_(m, IEN, k, j, i) : 0.;
-            const Real dens = (ismhd_ || ishydro_) ? w0_(m, IDN, k, j, i) : 0.;
-            const Real Y_e = (ismhd_ || ishydro_) ? w0_(m, IYF, k, j, i) : 0.;
-
-            theta = 1.0;
-            Real DTau_sum = 0.0;
-            for (int nuidx = 0; nuidx < nspecies_; ++nuidx) {
-              Real Estar =
-                  u1_(m, CombinedIdx(nuidx, M1_E_IDX, nvars_), k, j, i) +
-                  beta_dt * rEFN[nuidx][M1_E_IDX];
-              if (DrEFN[nuidx][M1_E_IDX] < 0) {
-                theta = Kokkos::fmin(-params_.source_limiter *
-                                              Kokkos::fmax(Estar, 0.0) /
-                                              DrEFN[nuidx][M1_E_IDX],
-                                     theta);
-              }
-              DTau_sum -= DrEFN[nuidx][M1_E_IDX];
+          for (int nuidx = 0; nuidx < nspecies_; ++nuidx) {
+            const int nsrc = (nspecies_ > 1) ? 5 : 4;
+            for (int var = 0; var < nsrc; ++var) {
+              source_step_is_finite =
+                  source_step_is_finite &&
+                  Kokkos::isfinite(DrEFN[nuidx][var]) &&
+                  Kokkos::isfinite(source_pred[nuidx][var] +
+                                   DrEFN[nuidx][var]);
             }
-            if (DTau_sum < 0) {
-              theta = Kokkos::fmin(-params_.source_limiter *
-                                      Kokkos::fmax(tau, 0.0) / DTau_sum,
-                                   theta);
+          }
+
+          // [G] Limit the source step using conservative one-sided bounds on
+          // the increments that [H] stores after applying the E/N floors.
+          theta = source_step_is_finite ? 1.0 : 0.0;
+          if (source_step_is_finite && params_.theta_limiter &&
+              params_.source_limiter >= 0.0) {
+            const Real limiter = params_.source_limiter;
+            const Real tau =
+                (ismhd_ || ishydro_) ? umhd0_(m, IEN, k, j, i) : 0.;
+            const Real cons_dens =
+                (ismhd_ || ishydro_)
+                    ? volform * w_lorentz * w0_(m, IDN, k, j, i)
+                    : 0.;
+            const Real Y_e =
+                (ismhd_ || ishydro_) ? w0_(m, IYF, k, j, i) : 0.;
+
+            Real dE_gain_full = 0.0;
+            Real dYe_up_full = 0.0;
+            Real dYe_down_full = 0.0;
+            Real dYe_up_rate = 0.0;
+            Real dYe_down_rate = 0.0;
+
+            for (int nuidx = 0; nuidx < nspecies_; ++nuidx) {
+              const Real Epred = source_pred[nuidx][M1_E_IDX];
+              const Real Ebase = source_base[nuidx][M1_E_IDX];
+              const Real dE = DrEFN[nuidx][M1_E_IDX];
+              const Real dE_full =
+                  Kokkos::fmax(params_.rad_E_floor, Epred + dE) - Ebase;
+              const Real dE_loss_full = Kokkos::fmax(-dE_full, 0.0);
+              const Real dE_loss_max = limiter * Kokkos::fmax(Ebase, 0.0);
+
+              if (dE_loss_full > dE_loss_max) {
+                theta = Kokkos::fmin(theta, dE_loss_max / (-dE));
+              }
+              dE_gain_full += Kokkos::fmax(dE_full, 0.0);
+
+              if (nspecies_ > 1) {
+                const Real Npred = source_pred[nuidx][M1_N_IDX];
+                const Real Nbase = source_base[nuidx][M1_N_IDX];
+                const Real dN = DrEFN[nuidx][M1_N_IDX];
+                const Real dN_full =
+                    Kokkos::fmax(params_.rad_N_floor, Npred + dN) - Nbase;
+                const Real dN_loss_full = Kokkos::fmax(-dN_full, 0.0);
+                const Real dN_gain_full = Kokkos::fmax(dN_full, 0.0);
+                const Real dN_loss_max =
+                    limiter * Kokkos::fmax(Nbase, 0.0);
+
+                if (dN_loss_full > dN_loss_max) {
+                  theta = Kokkos::fmin(theta, dN_loss_max / (-dN));
+                }
+
+                const Real dN_loss_rate =
+                    (Npred > params_.rad_N_floor && dN < 0.0) ? -dN : 0.0;
+                if (nuidx == 0) {
+                  dYe_up_full += mb * dN_loss_full;
+                  dYe_up_rate += mb * dN_loss_rate;
+                  dYe_down_full += mb * dN_gain_full;
+                  dYe_down_rate += mb * dN_gain_full;
+                } else if (nuidx == 1) {
+                  dYe_up_full += mb * dN_gain_full;
+                  dYe_up_rate += mb * dN_gain_full;
+                  dYe_down_full += mb * dN_loss_full;
+                  dYe_down_rate += mb * dN_loss_rate;
+                }
+              }
+            }
+
+            const Real dE_gain_max = limiter * Kokkos::fmax(tau, 0.0);
+            if (dE_gain_full > dE_gain_max) {
+              theta = Kokkos::fmin(theta, dE_gain_max / dE_gain_full);
             }
 
             if (nspecies_ > 1) {
-              Real DDxp_sum = 0.0;
-              for (int nuidx = 0; nuidx < nspecies_; ++nuidx) {
-                Real Nstar =
-                    u1_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i) +
-                    beta_dt * rEFN[nuidx][M1_N_IDX];
-                if (DrEFN[nuidx][M1_N_IDX] < 0) {
-                  theta = Kokkos::fmin(-params_.source_limiter *
-                                          Kokkos::fmax(Nstar, 0.0) /
-                                          DrEFN[nuidx][M1_N_IDX],
-                                       theta);
+              if (!(Kokkos::isfinite(cons_dens) && cons_dens > 0.0)) {
+                theta = 0.0;
+              } else {
+                dYe_up_full /= cons_dens;
+                dYe_down_full /= cons_dens;
+                dYe_up_rate /= cons_dens;
+                dYe_down_rate /= cons_dens;
+
+                const Real dYe_up_max =
+                    limiter *
+                    Kokkos::fmax(params_.source_Ye_max - Y_e, 0.0);
+                const Real dYe_down_max =
+                    limiter *
+                    Kokkos::fmax(Y_e - params_.source_Ye_min, 0.0);
+
+                if (dYe_up_full > dYe_up_max) {
+                  theta = Kokkos::fmin(theta, dYe_up_max / dYe_up_rate);
                 }
-                DDxp_sum += DDxp[nuidx];
-              }
-              const Real DYe = DDxp_sum / dens;
-              if (DYe > 0) {
-                theta = Kokkos::fmin(
-                    params_.source_limiter *
-                        Kokkos::fmax(params_.source_Ye_max - Y_e, 0.0) /
-                        DYe,
-                    theta);
-              } else if (DYe < 0) {
-                theta = Kokkos::fmin(
-                    params_.source_limiter *
-                        Kokkos::fmin(params_.source_Ye_min - Y_e, 0.0) / DYe,
-                    theta);
+                if (dYe_down_full > dYe_down_max) {
+                  theta =
+                      Kokkos::fmin(theta, dYe_down_max / dYe_down_rate);
+                }
               }
             }
-            theta = Kokkos::fmax(0.0, theta);
+
+            theta = Kokkos::fmax(0.0, Kokkos::fmin(1.0, theta));
           }  //  if (params_.theta_limiter && params_.source_limiter >= 0)
+
+          source_step_is_finite =
+              source_step_is_finite && Kokkos::isfinite(theta);
+          if (source_step_is_finite) {
+            for (int nuidx = 0; nuidx < nspecies_; ++nuidx) {
+              const Real Ecandidate = source_pred[nuidx][M1_E_IDX] +
+                                      theta * DrEFN[nuidx][M1_E_IDX];
+              AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Fcandidate_d{};
+              pack_F_d(
+                  beta_u(1), beta_u(2), beta_u(3),
+                  source_pred[nuidx][M1_FX_IDX] +
+                      theta * DrEFN[nuidx][M1_FX_IDX],
+                  source_pred[nuidx][M1_FY_IDX] +
+                      theta * DrEFN[nuidx][M1_FY_IDX],
+                  source_pred[nuidx][M1_FZ_IDX] +
+                      theta * DrEFN[nuidx][M1_FZ_IDX],
+                  Fcandidate_d);
+              source_step_is_finite =
+                  source_step_is_finite && Kokkos::isfinite(Ecandidate) &&
+                  Kokkos::isfinite(tensor_dot(g_uu, Fcandidate_d, Fcandidate_d));
+              if (nspecies_ > 1) {
+                source_step_is_finite =
+                    source_step_is_finite &&
+                    Kokkos::isfinite(source_pred[nuidx][M1_N_IDX] +
+                                     theta * DrEFN[nuidx][M1_N_IDX]);
+              }
+            }
+          }
+          if (!source_step_is_finite) {
+            theta = 0.0;
+          }
         } else {
           theta = 0.0;
         }  // if (params_.matter_sources)
 
         // [H] Update fields
+        const bool apply_source_step = source_step_is_finite && theta > 0.0;
         for (int nuidx = 0; nuidx < nspecies_; nuidx++) {
-          Real Ef = u1_(m, CombinedIdx(nuidx, M1_E_IDX, nvars_), k, j, i) +
-                    beta_dt * rEFN[nuidx][M1_E_IDX] +
-                    theta * DrEFN[nuidx][M1_E_IDX];
+          const Real Ebase = source_base[nuidx][M1_E_IDX];
+          AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Fbase_d{};
+          pack_F_d(beta_u(1), beta_u(2), beta_u(3),
+                   source_base[nuidx][M1_FX_IDX],
+                   source_base[nuidx][M1_FY_IDX],
+                   source_base[nuidx][M1_FZ_IDX], Fbase_d);
+
           AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Ff_d{};
-          Real Fxf = u1_(m, CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, i) +
-                     beta_dt * rEFN[nuidx][M1_FX_IDX] +
-                     theta * DrEFN[nuidx][M1_FX_IDX];
-          Real Fyf = u1_(m, CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, i) +
-                     beta_dt * rEFN[nuidx][M1_FY_IDX] +
-                     theta * DrEFN[nuidx][M1_FY_IDX];
-          Real Fzf = u1_(m, CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, j, i) +
-                     beta_dt * rEFN[nuidx][M1_FZ_IDX] +
-                     theta * DrEFN[nuidx][M1_FZ_IDX];
-          pack_F_d(adm.beta_u(m, 0, k, j, i), adm.beta_u(m, 1, k, j, i),
-                   adm.beta_u(m, 2, k, j, i), Fxf, Fyf, Fzf, Ff_d);
-          apply_floor(g_uu, Ef, Ff_d, params_);
+          Real Ef = Ebase;
+          for (int a = 0; a < 4; ++a) {
+            Ff_d(a) = Fbase_d(a);
+          }
+          if (apply_source_step) {
+            Ef = source_pred[nuidx][M1_E_IDX] +
+                 theta * DrEFN[nuidx][M1_E_IDX];
+            const Real Fxf = source_pred[nuidx][M1_FX_IDX] +
+                             theta * DrEFN[nuidx][M1_FX_IDX];
+            const Real Fyf = source_pred[nuidx][M1_FY_IDX] +
+                             theta * DrEFN[nuidx][M1_FY_IDX];
+            const Real Fzf = source_pred[nuidx][M1_FZ_IDX] +
+                             theta * DrEFN[nuidx][M1_FZ_IDX];
+            pack_F_d(adm.beta_u(m, 0, k, j, i),
+                     adm.beta_u(m, 1, k, j, i),
+                     adm.beta_u(m, 2, k, j, i), Fxf, Fyf, Fzf, Ff_d);
+            apply_floor(g_uu, Ef, Ff_d, params_);
+          }
+
+          AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> Pfinal_dd{};
+          calc_closure(BrentFunc_, g_dd, g_uu, n_d, w_lorentz, u_u, v_d,
+                       proj_ud, Ef, Ff_d, chi_(m, nuidx, k, j, i), Pfinal_dd,
+                       params_, params_.closure_type);
+
           u0_(m, CombinedIdx(nuidx, M1_E_IDX, nvars_), k, j, i) = Ef;
           u0_(m, CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, i) = Ff_d(1);
           u0_(m, CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, i) = Ff_d(2);
           u0_(m, CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, j, i) = Ff_d(3);
 
+          Real dN_actual = 0.0;
           if (nspecies_ > 1) {
-            Real Nf = u1_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i) +
-                      beta_dt * rEFN[nuidx][M1_N_IDX] +
-                      theta * DrEFN[nuidx][M1_N_IDX];
-            Nf = Kokkos::fmax(Nf, params_.rad_N_floor);
+            const Real Nbase = source_base[nuidx][M1_N_IDX];
+            Real Nf = Nbase;
+            if (apply_source_step) {
+              Nf = floor_number(source_pred[nuidx][M1_N_IDX] +
+                                    theta * DrEFN[nuidx][M1_N_IDX],
+                                params_);
+            }
+            dN_actual = Nf - Nbase;
             u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i) = Nf;
           }
 
+          const Real dE_actual = Ef - Ebase;
+          const Real dFx_actual = Ff_d(1) - Fbase_d(1);
+          const Real dFy_actual = Ff_d(2) - Fbase_d(2);
+          const Real dFz_actual = Ff_d(3) - Fbase_d(3);
           if (params_.backreact && stage == 2 && (ismhd_)) {
-            umhd0_(m, IEN, k, j, i) -= theta * DrEFN[nuidx][M1_E_IDX];
-            umhd0_(m, IM1, k, j, i) -= theta * DrEFN[nuidx][M1_FX_IDX];
-            umhd0_(m, IM2, k, j, i) -= theta * DrEFN[nuidx][M1_FY_IDX];
-            umhd0_(m, IM3, k, j, i) -= theta * DrEFN[nuidx][M1_FZ_IDX];
+            umhd0_(m, IEN, k, j, i) -= dE_actual;
+            umhd0_(m, IM1, k, j, i) -= dFx_actual;
+            umhd0_(m, IM2, k, j, i) -= dFy_actual;
+            umhd0_(m, IM3, k, j, i) -= dFz_actual;
             if (nspecies_ > 1) {
-              umhd0_(m, IYF, k, j, i) += theta * DDxp[nuidx];
+              if (nuidx == 0) {
+                umhd0_(m, IYF, k, j, i) -= mb * dN_actual;
+              } else if (nuidx == 1) {
+                umhd0_(m, IYF, k, j, i) += mb * dN_actual;
+              }
             }
           }
         }
       });
-  is_chi_updated = false;
   return TaskStatus::complete;
 }
 }  // namespace radiationm1

@@ -17,10 +17,6 @@
 
 namespace radiationm1 {
 TaskStatus RadiationM1::FloorAndCalcClosure(Driver* pdrive, int stage) {
-  if (is_chi_updated) {
-    return TaskStatus::complete;
-  }
-
   RegionIndcs& indcs = pmy_pack->pmesh->mb_indcs;
   int &is = indcs.is, &ie = indcs.ie;
   int &js = indcs.js, &je = indcs.je;
@@ -144,9 +140,9 @@ TaskStatus RadiationM1::FloorAndCalcClosure(Driver* pdrive, int stage) {
             u0_(m, CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, i) = F_d(2);
             u0_(m, CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, j, i) = F_d(3);
             if (nspecies_ > 1) {
-              Real N = u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i);
+              const Real N = u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i);
               u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i) =
-                  Kokkos::fmax(N, params_.rad_N_floor);
+                  floor_number(N, params_);
             }
             Real chi{};
             AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> Ptemp_dd{};
@@ -157,7 +153,6 @@ TaskStatus RadiationM1::FloorAndCalcClosure(Driver* pdrive, int stage) {
           };
         }
       });
-  is_chi_updated = true;
   return TaskStatus::complete;
 }
 }  // namespace radiationm1
