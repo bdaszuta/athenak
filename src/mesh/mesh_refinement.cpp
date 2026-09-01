@@ -684,11 +684,9 @@ void MeshRefinement::RedistAndRefineMeshBlocks(ParameterInput *pin, int nnew, in
   pm->pmb_pack->pmb->SetNeighbors(pm->ptree, pm->rank_eachmb);
 
   // The new masks are allocated empty. Horizon masks depend on the FastFlow center/radius.
-  // Lapse masks depend on alpha, which is an evolved Z4c field transferred above.
-  // Rebuild either mask before RadiationM1::SetMask consumes excision_floor after AMR.
+  // Lapse masks wait for the Z4c boundary refresh in InitBoundaryValuesAndPrimitives.
   if (pm->pmb_pack->pcoord->coord_data.bh_excise &&
-      (pm->pmb_pack->pcoord->coord_data.excision_scheme == ExcisionScheme::horizon ||
-       pm->pmb_pack->pcoord->coord_data.excision_scheme == ExcisionScheme::lapse) &&
+      pm->pmb_pack->pcoord->coord_data.excision_scheme == ExcisionScheme::horizon &&
       pm->pmb_pack->pz4c != nullptr) {
     pm->pmb_pack->pcoord->UpdateExcisionMasks();
   }
