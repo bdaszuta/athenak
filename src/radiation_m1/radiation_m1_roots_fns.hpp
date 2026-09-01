@@ -42,9 +42,9 @@ class BrentFunctor {
     Real J = calc_J_from_rT(rT_dd, u_u);
     AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> H_d{};
     calc_H_from_rT(rT_dd, u_u, proj_ud, H_d);
-    enforce_comoving_moment_safety(g_uu, J, H_d, params);
+    enforce_comoving_moment_safety(g_dd, g_uu, u_u, J, H_d, params);
 
-    const Real H2 = tensor_dot(g_uu, H_d, H_d);
+    const Real H2 = comoving_moment_squared(g_dd, g_uu, u_u, H_d);
     return J * J * xi * xi - H2;
   }
 };
@@ -134,9 +134,9 @@ KOKKOS_INLINE_FUNCTION Real NewtonClosure(
     Real J = calc_J_from_rT(rT_dd, u_u);
     AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> H_d{};
     calc_H_from_rT(rT_dd, u_u, proj_ud, H_d);
-    enforce_comoving_moment_safety(g_uu, J, H_d, params);
+    enforce_comoving_moment_safety(g_dd, g_uu, u_u, J, H_d, params);
 
-    const Real H2 = tensor_dot(g_uu, H_d, H_d);
+    const Real H2 = comoving_moment_squared(g_dd, g_uu, u_u, H_d);
     const Real fval = J * J * xi * xi - H2;
 
     if (use_bracket) {

@@ -455,19 +455,18 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
               AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> T_dd{};
               assemble_rT(n_d, E, F_d, P_dd, T_dd);
               AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> H_d{};
-              AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> H_u{};
               Real J = calc_J_from_rT(T_dd, u_u);
               calc_H_from_rT(T_dd, u_u, proj_ud, H_d);
+              Real h_fac{};
               const bool comoving_state_is_valid =
-                  enforce_comoving_moment_safety(g_uu, J, H_d, params_);
-
-              tensor_contract(g_uu, H_d, H_u);
+                  enforce_comoving_moment_safety(g_dd, g_uu, u_u, J, H_d, params_, &h_fac);
 
               // Gamma is the Eulerian 0-component of the number current
               // fnu = u + H/J, evaluated from the same (possibly
               // safety-rescaled) H used for the number source.
-              const Real Gamma_candidate =
-                  adm.alpha(m, k, j, i) * (u_u(0) + H_u(0) / J);
+              AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> fnu_u{};
+              assemble_fnu(g_uu, T_dd, u_u, J, h_fac, fnu_u);
+              const Real Gamma_candidate = adm.alpha(m, k, j, i) * fnu_u(0);
               const Real Gamma = comoving_state_is_valid &&
                                          Kokkos::isfinite(Gamma_candidate) &&
                                          Gamma_candidate > 0.0
@@ -528,6 +527,25 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
               Real Jstar = calc_J_from_rT(rT_dd, u_u);
               AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Hstar_d{};
               calc_H_from_rT(rT_dd, u_u, proj_ud, Hstar_d);
+              Real Gamma_star{};
+              Real Jstar_number = Jstar;
+              if (nspecies_ > 1) {
+                AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Hstar_number_d{};
+                for (int a = 0; a < 4; ++a) {
+                  Hstar_number_d(a) = Hstar_d(a);
+                }
+                Real hstar_fac{};
+                const bool star_number_state_is_valid = enforce_comoving_moment_safety(
+                    g_dd, g_uu, u_u, Jstar_number, Hstar_number_d, params_, &hstar_fac);
+                AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> fstar_u{};
+                assemble_fnu(g_uu, rT_dd, u_u, Jstar_number, hstar_fac, fstar_u);
+                const Real Gamma_star_candidate = adm.alpha(m, k, j, i) * fstar_u(0);
+                Gamma_star = star_number_state_is_valid &&
+                                     Kokkos::isfinite(Gamma_star_candidate) &&
+                                     Gamma_star_candidate > 0.0
+                                 ? Gamma_star_candidate
+                                 : w_lorentz;
+              }
 
               // Estimate interaction with matter
               const Real dtau = beta_dt * (adm.alpha(m, k, j, i) / w_lorentz);
@@ -551,8 +569,8 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
               // and Tmunu; a finite positive comoving J remains valid even
               // when J <= rad_E_floor.
               const bool comoving_state_is_valid =
-                  enforce_comoving_moment_safety(g_uu, Jnew, Hnew_d, params_);
-              const Real H2 = tensor_dot(g_uu, Hnew_d, Hnew_d);
+                  enforce_comoving_moment_safety(g_dd, g_uu, u_u, Jnew, Hnew_d, params_);
+              const Real H2 = comoving_moment_squared(g_dd, g_uu, u_u, Hnew_d);
               const Real normH = Kokkos::sqrt(H2);
               const Real inormH = (normH > 0. ? 1. / normH : 0.);
               const Real xi = comoving_state_is_valid
@@ -621,29 +639,19 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
               DrEFN[nuidx][M1_FZ_IDX] = Fnew_d(3) - Fpred_d(3);
 
               if (nspecies_ > 1) {
-                AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Hstar_u{};
-                const bool star_number_state_is_valid =
-                    enforce_comoving_moment_safety(g_uu, Jstar, Hstar_d, params_);
-                tensor_contract(g_uu, Hstar_d, Hstar_u);
-
-                const Real Gamma_star_candidate =
-                    adm.alpha(m, k, j, i) * (u_u(0) + Hstar_u(0) / Jstar);
-                const Real Gamma_star =
-                    star_number_state_is_valid &&
-                            Kokkos::isfinite(Gamma_star_candidate) &&
-                            Gamma_star_candidate > 0.0
-                        ? Gamma_star_candidate
-                        : w_lorentz;
-
+                // Match the late safety repair formerly applied to Jstar before
+                // deriving the equilibrium average energy.
+                Jstar = Jstar_number;
                 AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Hnumber_d{};
-                AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Hnumber_u{};
                 calc_H_from_rT(T_dd, u_u, proj_ud, Hnumber_d);
+                Real hnumber_fac{};
                 const bool number_state_is_valid =
-                    enforce_comoving_moment_safety(g_uu, Jnew, Hnumber_d, params_);
-                tensor_contract(g_uu, Hnumber_d, Hnumber_u);
+                    enforce_comoving_moment_safety(g_dd, g_uu, u_u, Jnew, Hnumber_d,
+                                                   params_, &hnumber_fac);
 
-                const Real Gamma_candidate =
-                    adm.alpha(m, k, j, i) * (u_u(0) + Hnumber_u(0) / Jnew);
+                AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> fnumber_u{};
+                assemble_fnu(g_uu, T_dd, u_u, Jnew, hnumber_fac, fnumber_u);
+                const Real Gamma_candidate = adm.alpha(m, k, j, i) * fnumber_u(0);
                 const Real Gamma = number_state_is_valid &&
                                            Kokkos::isfinite(Gamma_candidate) &&
                                            Gamma_candidate > 0.0

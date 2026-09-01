@@ -206,15 +206,15 @@ TaskStatus RadiationM1::CalcOpacityNurates_(Driver *pdrive, int stage) {
             assemble_rT(n_d, E, F_d, P_dd, T_dd);
 
             AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> H_d{};
-            AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> H_u{};
             J[nuidx] = calc_J_from_rT(T_dd, u_u);
             calc_H_from_rT(T_dd, u_u, proj_ud, H_d);
+            Real h_fac{};
             const bool comoving_state_is_valid = enforce_comoving_moment_safety(
-                g_uu, J[nuidx], H_d, m1_params_);
-            tensor_contract(g_uu, H_d, H_u);
+                g_dd, g_uu, u_u, J[nuidx], H_d, m1_params_, &h_fac);
 
-            const Real Gamma_candidate =
-                adm.alpha(m, k, j, i) * (u_u(0) + H_u(0) / J[nuidx]);
+            AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> fnu_u{};
+            assemble_fnu(g_uu, T_dd, u_u, J[nuidx], h_fac, fnu_u);
+            const Real Gamma_candidate = adm.alpha(m, k, j, i) * fnu_u(0);
             const Real Gamma = comoving_state_is_valid &&
                                        Kokkos::isfinite(Gamma_candidate) &&
                                        Gamma_candidate > 0.0

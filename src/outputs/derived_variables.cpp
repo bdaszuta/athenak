@@ -1383,8 +1383,9 @@ void BaseTypeOutput::ComputeDerivedVariable(std::string name, Mesh *pm) {
         Real J = calc_J_from_rT(T_dd, u_u);
         AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> H_d{};
         calc_H_from_rT(T_dd, u_u, proj_ud, H_d);
+        Real h_fac{};
         const bool comoving_state_is_valid =
-            enforce_comoving_moment_safety(g_uu, J, H_d, params_);
+            enforce_comoving_moment_safety(g_dd, g_uu, u_u, J, H_d, params_, &h_fac);
 
         if (mode == 0) {
           dv(m,nuidx,k,j,i) = J * ene_conv;
@@ -1397,7 +1398,7 @@ void BaseTypeOutput::ComputeDerivedVariable(std::string name, Mesh *pm) {
             dv(m,3*nuidx+2,k,j,i) = H_u(3) * ene_conv;
           } else {
             AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> fnu_u{};
-            assemble_fnu(u_u, J, H_u, fnu_u);
+            assemble_fnu(g_uu, T_dd, u_u, J, h_fac, fnu_u);
             if (mode == 3) {
               dv(m,4*nuidx+0,k,j,i) = fnu_u(0);
               dv(m,4*nuidx+1,k,j,i) = fnu_u(1);

@@ -52,7 +52,8 @@ MathSignal prepare_sources(const Real q[4], SrcParams &src_params,
 
   src_params.J = calc_J_from_rT(src_params.T_dd, src_params.u_u);
   calc_H_from_rT(src_params.T_dd, src_params.u_u, src_params.proj_ud, src_params.H_d);
-  enforce_comoving_moment_safety(src_params.g_uu, src_params.J, src_params.H_d, params_);
+  enforce_comoving_moment_safety(src_params.g_dd, src_params.g_uu, src_params.u_u,
+                                 src_params.J, src_params.H_d, params_);
 
   calc_rad_sources(src_params.eta, src_params.kabs, src_params.kscat, src_params.u_d,
                    src_params.J, src_params.H_d, src_params.S_d);

@@ -106,20 +106,19 @@ void CalcFlux(const int m, const int k, const int j, const int i, const int nuid
   AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> T_dd{};
   assemble_rT(n_d, E, F_d, P_dd, T_dd);
   AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> H_d{};
-  AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> H_u{};
   AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> fnu_u{};
 
   Real J = calc_J_from_rT(T_dd, u_u);
   calc_H_from_rT(T_dd, u_u, proj_ud, H_d);
+  Real h_fac{};
   const bool comoving_state_is_valid =
-      enforce_comoving_moment_safety(g_uu, J, H_d, params_);
-  tensor_contract(g_uu, H_d, H_u);
+      enforce_comoving_moment_safety(g_dd, g_uu, u_u, J, H_d, params_, &h_fac);
 
   Real N{};
   if (nspecies_ > 1) {
     N = u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i);
   }
-  assemble_fnu(u_u, J, H_u, fnu_u);
+  assemble_fnu(g_uu, T_dd, u_u, J, h_fac, fnu_u);
 
   // Gamma is the Eulerian 0-component of the number current fnu = u + H/J.
   // It must be evaluated from the SAME (possibly safety-rescaled) H used for

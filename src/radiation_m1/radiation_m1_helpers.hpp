@@ -126,17 +126,30 @@ Real flux_factor(const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_uu,
 
 //----------------------------------------------------------------------------------------
 //! \fn void radiationm1::assemble_fnu
-//  \brief Assemble the unit-norm radiation number current
+//  \brief Assemble the unit-norm radiation number current without cancellation.
 KOKKOS_INLINE_FUNCTION
-void assemble_fnu(const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &u_u,
-                  const Real &J,
-                  const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &H_u,
+void assemble_fnu(const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_uu,
+                  const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &T_dd,
+                  const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &u_u,
+                  const Real &J, const Real h_fac,
                   AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &fnu_u) {
-  // Keep H/J whenever J is finite and strictly positive, including J at the
-  // radiation floor, so that fnu and Gamma use the same criterion.
-  const bool use_flux = Kokkos::isfinite(J) && (J > 0.0);
+  if (!(h_fac > 0.0)) {
+    for (int a = 0; a < 4; ++a) {
+      fnu_u(a) = u_u(a);
+    }
+    return;
+  }
+
+  // Before H -> h_fac H, fnu^a = -T^a_b u^b / J.  Apply the accepted
+  // projection as h_fac fnu_raw + (1 - h_fac) u, avoiding u + H/J.
+  AthenaPointTensor<Real, TensorSymm::NONE, 4, 2> T_ud{};
+  tensor_contract(g_uu, T_dd, T_ud);
   for (int a = 0; a < 4; ++a) {
-    fnu_u(a) = u_u(a) + (use_flux ? H_u(a) / J : 0.0);
+    Real fnu_raw = 0.0;
+    for (int b = 0; b < 4; ++b) {
+      fnu_raw -= T_ud(a, b) * u_u(b) / J;
+    }
+    fnu_u(a) = h_fac * fnu_raw + (1.0 - h_fac) * u_u(a);
   }
 }
 
@@ -290,23 +303,87 @@ void calc_rF_source(const Real &alp,
 }
 
 //----------------------------------------------------------------------------------------
+//! \fn Real radiationm1::comoving_moment_squared
+//  \brief Compute H_a H^a from non-cancelling spatial components.
+KOKKOS_INLINE_FUNCTION
+Real comoving_moment_squared(
+    const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_dd,
+    const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_uu,
+    const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &u_u,
+    const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &H_d) {
+  const Real alpha = 1.0 / Kokkos::sqrt(-g_uu(0, 0));
+  const Real W = alpha * u_u(0);
+  if (W * W <= 2.0) {
+    return tensor_dot(g_uu, H_d, H_d);
+  }
+
+  AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> beta_u{};
+  AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> v_u{};
+  AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> v_d{};
+  AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Hperp_d{};
+  for (int a = 1; a < 4; ++a) {
+    beta_u(a) = -g_uu(0, a) / g_uu(0, 0);
+    v_u(a) = u_u(a) / W + beta_u(a) / alpha;
+    for (int b = 1; b < 4; ++b) {
+      v_d(a) += g_dd(a, b) * v_u(b);
+    }
+  }
+
+  const Real v2 = 1.0 - 1.0 / (W * W);
+  Real Hdotv = 0.0;
+  for (int a = 1; a < 4; ++a) {
+    Hdotv += H_d(a) * v_u(a);
+  }
+  for (int a = 1; a < 4; ++a) {
+    Hperp_d(a) = H_d(a) - Hdotv * v_d(a) / v2;
+  }
+
+  Real Hperp2 = 0.0;
+  for (int a = 1; a < 4; ++a) {
+    for (int b = 1; b < 4; ++b) {
+      const Real gamma_uu =
+          g_uu(a, b) - beta_u(a) * beta_u(b) * g_uu(0, 0);
+      Hperp2 += gamma_uu * Hperp_d(a) * Hperp_d(b);
+    }
+  }
+  return Hperp2 + (Hdotv * Hdotv / v2) / (W * W);
+}
+
+//----------------------------------------------------------------------------------------
 //! \fn bool radiationm1::enforce_comoving_moment_safety
 //  \brief Enforce finite, positive, and causal fluid-frame radiation moments without
 //  applying the Eulerian energy floor.
 KOKKOS_INLINE_FUNCTION
 bool enforce_comoving_moment_safety(
-    const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_uu, Real &J,
+    const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_dd,
+    const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_uu,
+    const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &u_u, Real &J,
     AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &H_d,
-    const RadiationM1Params &params) {
+    const RadiationM1Params &params, Real *h_fac = nullptr) {
+  if (h_fac != nullptr) {
+    *h_fac = 0.0;
+  }
   bool state_is_valid = Kokkos::isfinite(J) && (J > 0.0);
   for (int a = 0; a < 4; ++a) {
     state_is_valid = state_is_valid && Kokkos::isfinite(H_d(a));
   }
 
-  const Real H2 = state_is_valid ? tensor_dot(g_uu, H_d, H_d) : 0.0;
-
   // J or H itself is invalid: use the documented invalid-state fallback.
-  if (!state_is_valid || !Kokkos::isfinite(H2)) {
+  if (!state_is_valid) {
+    J = params.rad_E_floor;
+    for (int a = 0; a < 4; ++a) {
+      H_d(a) = 0.0;
+    }
+    return false;
+  }
+
+  // Keep H_a u^a = 0 exactly after the projector contraction.
+  H_d(0) = 0.0;
+  for (int a = 1; a < 4; ++a) {
+    H_d(0) -= u_u(a) * H_d(a) / u_u(0);
+  }
+  const Real H2 = comoving_moment_squared(g_dd, g_uu, u_u, H_d);
+  if (!Kokkos::isfinite(H2)) {
     J = params.rad_E_floor;
     for (int a = 0; a < 4; ++a) {
       H_d(a) = 0.0;
@@ -325,11 +402,15 @@ bool enforce_comoving_moment_safety(
   }
 
   const Real lim = J * J * (1 - params.rad_eps);
+  Real fac = 1.0;
   if (H2 > lim) {
-    const Real fac = Kokkos::sqrt(lim / H2);
+    fac = Kokkos::sqrt(lim / H2);
     for (int a = 0; a < 4; ++a) {
       H_d(a) *= fac;
     }
+  }
+  if (h_fac != nullptr) {
+    *h_fac = fac;
   }
   return true;
 }
