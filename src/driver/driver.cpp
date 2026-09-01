@@ -464,6 +464,17 @@ void Driver::Initialize(Mesh *pmesh, ParameterInput *pin, Outputs *pout, bool re
   //---- Step 1.  Set conserved variables in ghost zones for all physics
   InitBoundaryValuesAndPrimitives(pmesh);
 
+  // Synchronize the M1 excision mask before the first explicit GR stage.
+  MeshBlockPack *pmbp = pmesh->pmb_pack;
+  if (pmbp->pradm1 != nullptr && pmbp->pcoord->coord_data.bh_excise) {
+    if (pmbp->pz4c != nullptr &&
+        (pmbp->pcoord->coord_data.excision_scheme == ExcisionScheme::lapse ||
+         pmbp->pcoord->coord_data.excision_scheme == ExcisionScheme::horizon)) {
+      pmbp->pcoord->UpdateExcisionMasks();
+    }
+    (void) pmbp->pradm1->SetMask(this, 0);
+  }
+
   //---- Step 2.  Compute time step (if problem involves time evolution)
   hydro::Hydro *phydro = pmesh->pmb_pack->phydro;
   mhd::MHD *pmhd = pmesh->pmb_pack->pmhd;

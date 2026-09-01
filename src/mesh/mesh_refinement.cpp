@@ -158,13 +158,16 @@ void MeshRefinement::AdaptiveMeshRefinement(Driver *pdriver, ParameterInput *pin
   // Refine/derefine mesh and evolved data, set boundary conditions/timestep on new mesh
   if (nnew != 0 || ndel != 0) { // at least one (de)refinement flagged
     RedistAndRefineMeshBlocks(pin, nnew, ndel);
+    MeshBlockPack* pmbp = pmy_mesh->pmb_pack;
+    if (pmbp->pradm1 != nullptr) {
+      (void) pmbp->pradm1->SetMask(pdriver, 0);
+    }
 
     // Mark one mesh-topology update event (AMR and any resulting load balancing).
     pmy_mesh->MarkMeshUpdated();
 
     pdriver->InitBoundaryValuesAndPrimitives(pmy_mesh);
 
-    MeshBlockPack* pmbp = pmy_mesh->pmb_pack;
     if (pmbp->pmhd != nullptr) {
       RepairAMRFC(pmbp->pmhd->b0);
       // Repair changes internal faces after the first exchange finalized exterior
@@ -680,13 +683,12 @@ void MeshRefinement::RedistAndRefineMeshBlocks(ParameterInput *pin, int nnew, in
   pm->pmb_pack->AddCoordinates(pin);
   pm->pmb_pack->pmb->SetNeighbors(pm->ptree, pm->rank_eachmb);
 
-  // The new masks are allocated but empty, and Z4c::UpdateExcisionMasks only runs at the
-  // last stage of a cycle, so excision would be off until the end of the next cycle.
-  // Horizon masks depend only on the center/radius held by FastFlow, which survives the
-  // remesh, so they can be rebuilt now.  Lapse masks are not: they read ADM data that is
-  // not yet guaranteed to be valid here.
+  // The new masks are allocated empty. Horizon masks depend on the FastFlow center/radius.
+  // Lapse masks depend on alpha, which is an evolved Z4c field transferred above.
+  // Rebuild either mask before RadiationM1::SetMask consumes excision_floor after AMR.
   if (pm->pmb_pack->pcoord->coord_data.bh_excise &&
-      pm->pmb_pack->pcoord->coord_data.excision_scheme == ExcisionScheme::horizon &&
+      (pm->pmb_pack->pcoord->coord_data.excision_scheme == ExcisionScheme::horizon ||
+       pm->pmb_pack->pcoord->coord_data.excision_scheme == ExcisionScheme::lapse) &&
       pm->pmb_pack->pz4c != nullptr) {
     pm->pmb_pack->pcoord->UpdateExcisionMasks();
   }

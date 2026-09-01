@@ -56,9 +56,9 @@ static void ApplyRadM1BCsToArray(MeshBlockPack *ppack,
           case BoundaryFlag::outflow:
             for (int i = 0; i < ng; ++i) {
               i0(m, radiationm1::CombinedIdx(nuidx, M1_E_IDX,  nvars_), k, j, is-i-1) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, is-i-1) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, is-i-1) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, j, is-i-1) = params_.rad_E_floor;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, is-i-1) = 0.0;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, is-i-1) = 0.0;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, j, is-i-1) = 0.0;
               if (nspecies_ > 1) {
                 i0(m, radiationm1::CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, is-i-1) = params_.rad_N_floor;
               }
@@ -78,9 +78,9 @@ static void ApplyRadM1BCsToArray(MeshBlockPack *ppack,
           case BoundaryFlag::vacuum:
             for (int i = 0; i < ng; ++i) {
               i0(m, radiationm1::CombinedIdx(nuidx, M1_E_IDX,  nvars_), k, j, is-i-1) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, is-i-1) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, is-i-1) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, j, is-i-1) = params_.rad_E_floor;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, is-i-1) = 0.0;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, is-i-1) = 0.0;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, j, is-i-1) = 0.0;
               if (nspecies_ > 1) {
                 i0(m, radiationm1::CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, is-i-1) = params_.rad_N_floor;
               }
@@ -106,9 +106,9 @@ static void ApplyRadM1BCsToArray(MeshBlockPack *ppack,
           case BoundaryFlag::outflow:
             for (int i = 0; i < ng; ++i) {
               i0(m, radiationm1::CombinedIdx(nuidx, M1_E_IDX,  nvars_), k, j, ie+i+1) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, ie+i+1) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, ie+i+1) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, j, ie+i+1) = params_.rad_E_floor;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, ie+i+1) = 0.0;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, ie+i+1) = 0.0;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, j, ie+i+1) = 0.0;
               if (nspecies_ > 1) {
                 i0(m, radiationm1::CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, ie+i+1) = params_.rad_N_floor;
               }
@@ -128,9 +128,9 @@ static void ApplyRadM1BCsToArray(MeshBlockPack *ppack,
           case BoundaryFlag::vacuum:
             for (int i = 0; i < ng; ++i) {
               i0(m, radiationm1::CombinedIdx(nuidx, M1_E_IDX,  nvars_), k, j, ie+i+1) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, ie+i+1) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, ie+i+1) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, j, ie+i+1) = params_.rad_E_floor;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, ie+i+1) = 0.0;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, ie+i+1) = 0.0;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, j, ie+i+1) = 0.0;
               if (nspecies_ > 1) {
                 i0(m, radiationm1::CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, ie+i+1) = params_.rad_N_floor;
               }
@@ -165,9 +165,9 @@ static void ApplyRadM1BCsToArray(MeshBlockPack *ppack,
           case BoundaryFlag::outflow:
             for (int j = 0; j < ng; ++j) {
               i0(m, radiationm1::CombinedIdx(nuidx, M1_E_IDX,  nvars_), k, js-j-1, i) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, js-j-1, i) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, js-j-1, i) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, js-j-1, i) = params_.rad_E_floor;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, js-j-1, i) = 0.0;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, js-j-1, i) = 0.0;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, js-j-1, i) = 0.0;
               if (nspecies_ > 1) {
                 i0(m, radiationm1::CombinedIdx(nuidx, M1_N_IDX, nvars_), k, js-j-1, i) = params_.rad_N_floor;
               }
@@ -187,9 +187,9 @@ static void ApplyRadM1BCsToArray(MeshBlockPack *ppack,
           case BoundaryFlag::vacuum:
             for (int j = 0; j < ng; ++j) {
               i0(m, radiationm1::CombinedIdx(nuidx, M1_E_IDX,  nvars_), k, js-j-1, i) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, js-j-1, i) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, js-j-1, i) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, js-j-1, i) = params_.rad_E_floor;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, js-j-1, i) = 0.0;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, js-j-1, i) = 0.0;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, js-j-1, i) = 0.0;
               if (nspecies_ > 1) {
                 i0(m, radiationm1::CombinedIdx(nuidx, M1_N_IDX, nvars_), k, js-j-1, i) = params_.rad_N_floor;
               }
@@ -215,9 +215,9 @@ static void ApplyRadM1BCsToArray(MeshBlockPack *ppack,
           case BoundaryFlag::outflow:
             for (int j = 0; j < ng; ++j) {
               i0(m, radiationm1::CombinedIdx(nuidx, M1_E_IDX,  nvars_), k, je+j+1, i) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, je+j+1, i) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, je+j+1, i) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, je+j+1, i) = params_.rad_E_floor;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, je+j+1, i) = 0.0;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, je+j+1, i) = 0.0;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, je+j+1, i) = 0.0;
               if (nspecies_ > 1) {
                 i0(m, radiationm1::CombinedIdx(nuidx, M1_N_IDX, nvars_), k, je+j+1, i) = params_.rad_N_floor;
               }
@@ -237,9 +237,9 @@ static void ApplyRadM1BCsToArray(MeshBlockPack *ppack,
           case BoundaryFlag::vacuum:
             for (int j = 0; j < ng; ++j) {
               i0(m, radiationm1::CombinedIdx(nuidx, M1_E_IDX,  nvars_), k, je+j+1, i) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, je+j+1, i) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, je+j+1, i) = params_.rad_E_floor;
-              i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, je+j+1, i) = params_.rad_E_floor;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, je+j+1, i) = 0.0;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, je+j+1, i) = 0.0;
+              i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, je+j+1, i) = 0.0;
               if (nspecies_ > 1) {
                 i0(m, radiationm1::CombinedIdx(nuidx, M1_N_IDX, nvars_), k, je+j+1, i) = params_.rad_N_floor;
               }
@@ -275,9 +275,9 @@ static void ApplyRadM1BCsToArray(MeshBlockPack *ppack,
         case BoundaryFlag::outflow:
           for (int k = 0; k < ng; ++k) {
             i0(m, radiationm1::CombinedIdx(nuidx, M1_E_IDX,  nvars_), ks-k-1, j, i) = params_.rad_E_floor;
-            i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), ks-k-1, j, i) = params_.rad_E_floor;
-            i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), ks-k-1, j, i) = params_.rad_E_floor;
-            i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), ks-k-1, j, i) = params_.rad_E_floor;
+            i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), ks-k-1, j, i) = 0.0;
+            i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), ks-k-1, j, i) = 0.0;
+            i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), ks-k-1, j, i) = 0.0;
             if (nspecies_ > 1) {
               i0(m, radiationm1::CombinedIdx(nuidx, M1_N_IDX, nvars_), ks-k-1, j, i) = params_.rad_N_floor;
             }
@@ -297,9 +297,9 @@ static void ApplyRadM1BCsToArray(MeshBlockPack *ppack,
         case BoundaryFlag::vacuum:
           for (int k = 0; k < ng; ++k) {
             i0(m, radiationm1::CombinedIdx(nuidx, M1_E_IDX,  nvars_), ks-k-1, j, i) = params_.rad_E_floor;
-            i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), ks-k-1, j, i) = params_.rad_E_floor;
-            i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), ks-k-1, j, i) = params_.rad_E_floor;
-            i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), ks-k-1, j, i) = params_.rad_E_floor;
+            i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), ks-k-1, j, i) = 0.0;
+            i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), ks-k-1, j, i) = 0.0;
+            i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), ks-k-1, j, i) = 0.0;
             if (nspecies_ > 1) {
               i0(m, radiationm1::CombinedIdx(nuidx, M1_N_IDX, nvars_), ks-k-1, j, i) = params_.rad_N_floor;
             }
@@ -325,9 +325,9 @@ static void ApplyRadM1BCsToArray(MeshBlockPack *ppack,
         case BoundaryFlag::outflow:
           for (int k = 0; k < ng; ++k) {
             i0(m, radiationm1::CombinedIdx(nuidx, M1_E_IDX,  nvars_), ke+k+1, j, i) = params_.rad_E_floor;
-            i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), ke+k+1, j, i) = params_.rad_E_floor;
-            i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), ke+k+1, j, i) = params_.rad_E_floor;
-            i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), ke+k+1, j, i) = params_.rad_E_floor;
+            i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), ke+k+1, j, i) = 0.0;
+            i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), ke+k+1, j, i) = 0.0;
+            i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), ke+k+1, j, i) = 0.0;
             if (nspecies_ > 1) {
               i0(m, radiationm1::CombinedIdx(nuidx, M1_N_IDX, nvars_), ke+k+1, j, i) = params_.rad_N_floor;
             }
@@ -347,9 +347,9 @@ static void ApplyRadM1BCsToArray(MeshBlockPack *ppack,
         case BoundaryFlag::vacuum:
           for (int k = 0; k < ng; ++k) {
             i0(m, radiationm1::CombinedIdx(nuidx, M1_E_IDX,  nvars_), ke+k+1, j, i) = params_.rad_E_floor;
-            i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), ke+k+1, j, i) = params_.rad_E_floor;
-            i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), ke+k+1, j, i) = params_.rad_E_floor;
-            i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), ke+k+1, j, i) = params_.rad_E_floor;
+            i0(m, radiationm1::CombinedIdx(nuidx, M1_FX_IDX, nvars_), ke+k+1, j, i) = 0.0;
+            i0(m, radiationm1::CombinedIdx(nuidx, M1_FY_IDX, nvars_), ke+k+1, j, i) = 0.0;
+            i0(m, radiationm1::CombinedIdx(nuidx, M1_FZ_IDX, nvars_), ke+k+1, j, i) = 0.0;
             if (nspecies_ > 1) {
               i0(m, radiationm1::CombinedIdx(nuidx, M1_N_IDX, nvars_), ke+k+1, j, i) = params_.rad_N_floor;
             }

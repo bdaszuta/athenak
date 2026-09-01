@@ -202,8 +202,12 @@ void DynGRMHDPS<EOSPolicy, ErrorPolicy>::QueueDynGRMHDTasks() {
     pnr->QueueTask(&DynGRMHD::SetTmunu, this, MHD_SetTmunu, "MHD_SetTmunu",
                    Task_Run, {MHD_CopyU});
     if (pradm1 != nullptr) {
-      pnr->QueueTask(&RadiationM1::FloorAndCalcClosure, pradm1, M1_Closure, "M1_Closure", Task_Run);
-      pnr->QueueTask(&RadiationM1::SetTmunu, pradm1, M1_SetTmunu, "M1_SetTmunu", Task_Run, {MHD_SetTmunu});
+      pnr->QueueTask(&RadiationM1::SetMask, pradm1, M1_SetMask, "M1_SetMask",
+                     Task_Run);
+      pnr->QueueTask(&RadiationM1::FloorAndCalcClosure, pradm1, M1_Closure,
+                     "M1_Closure", Task_Run, {M1_SetMask});
+      pnr->QueueTask(&RadiationM1::SetTmunu, pradm1, M1_SetTmunu, "M1_SetTmunu",
+                     Task_Run, {MHD_SetTmunu, M1_Closure});
     }
   }
   pnr->QueueTask(&MHD::SendFlux, pmhd, MHD_SendFlux, "MHD_SendFlux",

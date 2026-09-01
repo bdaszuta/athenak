@@ -191,21 +191,23 @@ SrcSignal source_update_ll(
 
   int iter = 0;
   do {
-    if (iter < m1_params.source_maxiter) {
-      ierr = HybridsjIterate(HybridsjFunc, hybridsj_state, hybridsj_params, BrentFunc,
-                             src_params, m1_params);
-      iter++;
+    if (iter >= m1_params.source_maxiter) {
+#ifdef DEBUG_BUILD
+      Kokkos::printf(
+          "source_update: Exceeded maximum number of iterations of Hybridsj.\n");
+#endif
+      return SrcFail;
     }
 
+    ierr = HybridsjIterate(HybridsjFunc, hybridsj_state, hybridsj_params, BrentFunc,
+                           src_params, m1_params);
+    iter++;
+
     // the solver is stuck!
-    if (ierr == LinalgEnoprogj || ierr == LinalgEbadfunc ||
-        iter >= m1_params.source_maxiter) {
+    if (ierr == LinalgEnoprogj || ierr == LinalgEbadfunc) {
 #ifdef DEBUG_BUILD
       if (ierr == LinalgEbadfunc) {
         Kokkos::printf("source_update: NaNs/Infs found in implicit solve.\n");
-      } else if (iter > m1_params.source_maxiter) {
-        Kokkos::printf(
-            "source_update: Exceeded maximum number of iterations of Hybridsj.\n");
       } else {
         Kokkos::printf("source_update: Non-linear solver is stuck.\n");
       }

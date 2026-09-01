@@ -42,6 +42,7 @@ ndiag      = 1           # cycles between diagostic output
 <radiation_m1>
 closure_fun = minerbo
 matter_sources = true
+opacity_type = toy
 theta_limiter = false
 src_update = implicit
 

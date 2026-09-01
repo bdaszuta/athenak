@@ -1435,7 +1435,7 @@ void BaseTypeOutput::ComputeDerivedVariable(std::string name, Mesh *pm) {
                     adm.g_dd(m, 1, 2, k, j, i), adm.g_dd(m, 2, 2, k, j, i));
                 Real volform = Kokkos::sqrt(gam);
 
-                Real flux_fac = flux_factor(g_uu, J, H_d, params_.rad_E_floor);
+                Real flux_fac = flux_factor(g_uu, J, H_d);
                 dv(m,nuidx,k,j,i) = nnu * Kokkos::sqrt(flux_fac) / volform;
               } else {
                 Real nnu = 0.0;

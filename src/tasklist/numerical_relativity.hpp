@@ -60,6 +60,7 @@ enum TaskName {
   MHD_ClearRU,
   MHD_NTASKS,
 
+  M1_SetMask,
   M1_Closure,
   M1_SetTmunu,
   M1_NTASKS,

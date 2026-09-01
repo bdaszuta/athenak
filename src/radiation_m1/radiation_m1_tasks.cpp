@@ -63,6 +63,8 @@ void RadiationM1::AssembleRadiationM1Tasks(
   // decide what type of opacities to compute
   if (!params.matter_sources) {
     id.M1_mattersrc = id.M1_closure;
+  } else if (params.opacity_type == None) {
+    id.M1_mattersrc = id.M1_closure;
 #if ENABLE_NURATES
   } else if (params.opacity_type == BnsNurates) {
     id.M1_mattersrc = tl["opsplit_stagen"]->AddTask(&RadiationM1::CalcOpacityNurates,
@@ -290,7 +292,7 @@ TaskStatus RadiationM1::Prolongate(Driver *pdrive, int stage) {
 //! stage)>stage>=(0): clears sends of U, Flx_U,       U_Shr If stage=(-1):
 //! clears sends of U If stage=(-4):              clears sends of U_Shr
 TaskStatus RadiationM1::ClearSend(Driver *pdrive, int stage) {
-  TaskStatus tstat;
+  TaskStatus tstat = TaskStatus::complete;
   // check sends of U complete
   if ((stage >= 0) || (stage == -1)) {
     tstat = pbval_u->ClearSend();
@@ -316,7 +318,7 @@ TaskStatus RadiationM1::ClearSend(Driver *pdrive, int stage) {
 //! If stage=(-1):              clears recvs of U
 //! If stage=(-4):              clears recvs of                 U_Shr
 TaskStatus RadiationM1::ClearRecv(Driver *pdrive, int stage) {
-  TaskStatus tstat;
+  TaskStatus tstat = TaskStatus::complete;
   // check receives of U complete
   if ((stage >= 0) || (stage == -1)) {
     tstat = pbval_u->ClearRecv();

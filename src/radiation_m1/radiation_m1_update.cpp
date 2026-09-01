@@ -685,9 +685,11 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
 
           // [G] Limit the source step using conservative one-sided bounds on
           // the increments that [H] stores after applying the E/N floors.
-          theta = source_step_is_finite ? 1.0 : 0.0;
+          theta = (source_step_is_finite && params_.source_limiter != 0.0)
+                      ? 1.0
+                      : 0.0;
           if (source_step_is_finite && params_.theta_limiter &&
-              params_.source_limiter >= 0.0) {
+              params_.source_limiter > 0.0) {
             const Real limiter = params_.source_limiter;
             const Real tau =
                 (ismhd_ || ishydro_) ? umhd0_(m, IEN, k, j, i) : 0.;

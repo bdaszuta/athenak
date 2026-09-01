@@ -118,9 +118,9 @@ void calc_Pthick(const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_dd,
 //  \brief Compute the flux factor xi = H_a H^a / J^2
 KOKKOS_INLINE_FUNCTION
 Real flux_factor(const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_uu,
-                 const Real &J, AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &H_d,
-                 const Real &rad_E_floor) {
-  const Real xi = (J > rad_E_floor ? tensor_dot(g_uu, H_d, H_d) / (J*J) : 0);
+                 const Real &J, AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &H_d) {
+  const bool use_flux = Kokkos::isfinite(J) && (J > 0.0);
+  const Real xi = (use_flux ? tensor_dot(g_uu, H_d, H_d) / (J*J) : 0);
   return Kokkos::fmax(0.0, Kokkos::fmin(xi, 1.0));
 }
 
