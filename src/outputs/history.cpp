@@ -407,6 +407,7 @@ void HistoryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
           break;
         case PhysicsModule::SpaceTimeDynamics:
           fname.append(".z4c");
+          break;
         case PhysicsModule::UserDefined:
           fname.append(".user");
           break;
@@ -430,7 +431,8 @@ void HistoryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
         std::fprintf(pfile,"#  [%d]=time      ", iout++);
         std::fprintf(pfile,"[%d]=dt       ", iout++);
         for (int n=0; n<data.nhist; ++n) {
-          std::fprintf(pfile,"[%d]=%.10s    ", iout++, data.label[n].c_str());
+          // Field width pads short labels without truncating long diagnostic names.
+          std::fprintf(pfile,"[%d]=%-16s ", iout++, data.label[n].c_str());
         }
         std::fprintf(pfile,"\n");                              // terminate line
         data.header_written = true;

@@ -98,7 +98,8 @@ class MeshRefinement {
 #endif
 
   // functions
-  void CheckForRefinement(MeshBlockPack* pmbp);
+  // Initial passes bypass runtime cadence without advancing per-block cycle counters.
+  void CheckForRefinement(MeshBlockPack* pmbp, bool initial_pass = false);
   void AdaptiveMeshRefinement(Driver *pdrive, ParameterInput *pin);
   void UpdateMeshBlockTree(int &nnew, int &ndel);
   void RedistAndRefineMeshBlocks(ParameterInput *pin, int nnew, int ndel);

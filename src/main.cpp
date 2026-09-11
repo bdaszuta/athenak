@@ -368,10 +368,34 @@ int main(int argc, char *argv[]) {
   }
 
   //--- Step 6. --------------------------------------------------------------------------
-  // Construct Driver and Outputs. Actual outputs (including initial conditions) are made
-  // in Driver.Initialize(). Add wall clock timer to Driver if necessary.
+  // Construct Driver, converge fresh-start AMR, then construct Outputs. Initial outputs
+  // are made on the final hierarchy in Driver::Initialize().
 
   Driver* pdriver = new Driver(pinput, pmesh, wtlim, &timer);
+
+  // Reevaluate initial data directly at each new resolution, not by prolongating ICs.
+  // Restarts retain their saved hierarchy and evolved state; never replay fresh ICs.
+  if (pmesh->adaptive && !res_flag) {
+    // Primitive-density criteria need C2P, and slope/curvature criteria read ghosts.
+    // Prepare the initial coarse state just as we do after each redistribution.
+    pdriver->InitBoundaryValuesAndPrimitives(pmesh);
+    while (true) {
+      pmesh->pmr->CheckForRefinement(pmesh->pmb_pack, /*initial_pass=*/true);
+      int nnew = 0, ndel = 0;
+      pmesh->pmr->UpdateMeshBlockTree(nnew, ndel);
+      if (nnew == 0 && ndel == 0) {break;}
+
+      pmesh->pmr->RedistAndRefineMeshBlocks(pinput, nnew, ndel);
+      // Invalidate rank-packed boundary metadata before any new-mesh communication.
+      pmesh->MarkMeshUpdated();
+      pmesh->pmr->nmb_created += nnew;
+      pmesh->pmr->nmb_deleted += ndel;
+      // Reuse the existing pgen instance; repeated IC evaluation must not reenroll tasks.
+      pmesh->pgen->CallProblemGenerator(pinput, /*is_restart=*/false);
+      pdriver->InitBoundaryValuesAndPrimitives(pmesh);
+    }
+  }
+
   Outputs* pout = new Outputs(pinput, pmesh);
 
   // All classes that read parameters have now been constructed.  Warn (on rank 0) about

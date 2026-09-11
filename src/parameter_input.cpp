@@ -393,15 +393,14 @@ void ParameterInput::ModifyFromCmdline(int argc, char *argv[]) {
       std::exit(EXIT_FAILURE);
     }
 
-    // get pointer to node with same parameter name in linked list of InputLines
+    // Permit optional parameters in existing blocks, keeping new CLI entries unread
+    // until used so CheckUnusedParameters can still report misspelled names.
     pl = pb->GetPtrToLine(name);
     if (pl == nullptr) {
-      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-                << std::endl << "Parameter '" << name << "' in block '" << block
-                << "' on command line not found" << std::endl;
-      std::exit(EXIT_FAILURE);
+      AddParameter(pb, name, value, "");
+    } else {
+      pl->param_value.assign(value);   // replace existing value
     }
-    pl->param_value.assign(value);   // replace existing value
 
     if (value.length() > pb->max_len_parvalue) pb->max_len_parvalue = value.length();
   }

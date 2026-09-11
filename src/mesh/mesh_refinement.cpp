@@ -202,9 +202,9 @@ void MeshRefinement::AdaptiveMeshRefinement(Driver *pdriver, ParameterInput *pin
 //! \fn void RefinementCriteria::CheckForRefinement()
 //! \brief Checks for refinement/de-refinement and sets refine_flag(m) for all
 //! MeshBlocks within a MeshBlockPack.  Increments number of cycles since last refinement
-//! counter for all MeshBlocks
+//! counter for all MeshBlocks on runtime checks only.
 
-void MeshRefinement::CheckForRefinement(MeshBlockPack* pmbp) {
+void MeshRefinement::CheckForRefinement(MeshBlockPack* pmbp, bool initial_pass) {
   // reallocate and zero refine_flag in host space and sync with device
   Kokkos::realloc(refine_flag, pmy_mesh->nmb_total);
   for (int m=0; m<(pmy_mesh->nmb_total); ++m) {
@@ -213,11 +213,14 @@ void MeshRefinement::CheckForRefinement(MeshBlockPack* pmbp) {
   refine_flag.template modify<HostMemSpace>();
   refine_flag.template sync<DevExeSpace>();
 
-  // increment cycle counter for each MB
-  for (int m=0; m<(pmy_mesh->nmb_total); ++m) {
-    ncyc_since_ref(m) += 1;
+  // Startup convergence is not a timestep: neither advance counters nor apply cadence.
+  // RedistAndRefineMeshBlocks still remaps/resizes ncyc_since_ref after every change.
+  if (!initial_pass) {
+    for (int m=0; m<(pmy_mesh->nmb_total); ++m) {
+      ncyc_since_ref(m) += 1;
+    }
+    if ((pmy_mesh->ncycle)%(ncyc_check_amr) != 0) {return;}  // not cycle to check
   }
-  if ((pmy_mesh->ncycle)%(ncyc_check_amr) != 0) {return;}  // not cycle to check
 
   // calculate derived refinement variables
   if (pmrc->nderived > 0) {
@@ -260,9 +263,11 @@ void MeshRefinement::CheckForRefinement(MeshBlockPack* pmbp) {
       if (refine_flag.h_view(m+mbs) < 0) {refine_flag.h_view(m+mbs) = 0;}
     }
   }
-  // Turn off (on host) refine/derefine flag for any MB that has been recently refined
-  for (int m=0; m<nmb; ++m) {
-    if (ncyc_since_ref(m+mbs) < refinement_interval) {refine_flag.h_view(m+mbs) = 0;}
+  // Suppress recently refined blocks only at runtime, not during IC convergence.
+  if (!initial_pass) {
+    for (int m=0; m<nmb; ++m) {
+      if (ncyc_since_ref(m+mbs) < refinement_interval) {refine_flag.h_view(m+mbs) = 0;}
+    }
   }
 
 #if MPI_PARALLEL_ENABLED
