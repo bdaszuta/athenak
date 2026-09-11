@@ -135,15 +135,15 @@ class TabulatedEOS {
     ye_atmosphere = pin->GetOrAddReal("mhd", "s0_atmosphere",0.5);
 
     // Sync the views to the GPU
-    m_log_rho.template modify<HostMemSpace>();
-    m_log_p.template modify<HostMemSpace>();
-    m_log_e.template modify<HostMemSpace>();
-    if (has_ye) {m_ye.template modify<HostMemSpace>();}
+    m_log_rho.modify_host();
+    m_log_p.modify_host();
+    m_log_e.modify_host();
+    if (has_ye) {m_ye.modify_host();}
 
-    m_log_rho.template sync<DevExeSpace>();
-    m_log_p.template sync<DevExeSpace>();
-    m_log_e.template sync<DevExeSpace>();
-    if (has_ye) {m_ye.template sync<DevExeSpace>();}
+    m_log_rho.sync_device();
+    m_log_p.sync_device();
+    m_log_e.sync_device();
+    if (has_ye) {m_ye.sync_device();}
   }
 
   template<LocationTag loc>

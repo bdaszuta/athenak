@@ -76,11 +76,11 @@ void GaussLegendreGrid::InitializeAngleAndWeights() {
   }
 
   // sync to device
-  polar_pos.template modify<HostMemSpace>();
-  polar_pos.template sync<DevExeSpace>();
+  polar_pos.modify_host();
+  polar_pos.sync_device();
 
-  int_weights.template modify<HostMemSpace>();
-  int_weights.template sync<DevExeSpace>();
+  int_weights.modify_host();
+  int_weights.sync_device();
 }
 
 void GaussLegendreGrid::InitializeRadius() {
@@ -91,8 +91,8 @@ void GaussLegendreGrid::InitializeRadius() {
     cart_pos.h_view(n,1) = radius*sin(phi)*sin(theta);
     cart_pos.h_view(n,2) = radius*cos(theta);
   }
-  cart_pos.template modify<HostMemSpace>();
-  cart_pos.template sync<DevExeSpace>();
+  cart_pos.modify_host();
+  cart_pos.sync_device();
 }
 
 //----------------------------------------------------------------------------------------
@@ -149,8 +149,8 @@ void GaussLegendreGrid::SetInterpolationIndices() {
   }
 
   // sync dual arrays
-  interp_indcs.template modify<HostMemSpace>();
-  interp_indcs.template sync<DevExeSpace>();
+  interp_indcs.modify_host();
+  interp_indcs.sync_device();
 
   return;
 }
@@ -242,8 +242,8 @@ void GaussLegendreGrid::SetInterpolationWeights() {
   }
 
   // sync dual arrays
-  interp_wghts.template modify<HostMemSpace>();
-  interp_wghts.template sync<DevExeSpace>();
+  interp_wghts.modify_host();
+  interp_wghts.sync_device();
 
   return;
 }
@@ -290,8 +290,8 @@ void GaussLegendreGrid::InterpolateToSphere(int var_ind, DvceArray5D<Real> &val)
   });
 
   // sync dual arrays
-  interp_vals.template modify<DevExeSpace>();
-  interp_vals.template sync<HostMemSpace>();
+  interp_vals.modify_device();
+  interp_vals.sync_host();
 
   return;
 }

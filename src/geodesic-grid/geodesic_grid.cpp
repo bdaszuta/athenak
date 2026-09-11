@@ -315,27 +315,27 @@ GeodesicGrid::GeodesicGrid(int nlev, bool rotate, bool fluxes) :
     }
 
     // sync dual arrays
-    num_neighbors.template modify<HostMemSpace>();
-    num_neighbors.template sync<DevExeSpace>();
-    ind_neighbors.template modify<HostMemSpace>();
-    ind_neighbors.template sync<DevExeSpace>();
-    ind_neighbors_edges.template modify<HostMemSpace>();
-    ind_neighbors_edges.template sync<DevExeSpace>();
-    arc_lengths.template modify<HostMemSpace>();
-    arc_lengths.template sync<DevExeSpace>();
-    solid_angles.template modify<HostMemSpace>();
-    solid_angles.template sync<DevExeSpace>();
-    cart_pos.template modify<HostMemSpace>();
-    cart_pos.template sync<DevExeSpace>();
-    cart_pos_mid.template modify<HostMemSpace>();
-    cart_pos_mid.template sync<DevExeSpace>();
-    polar_pos.template modify<HostMemSpace>();
-    polar_pos.template sync<DevExeSpace>();
-    polar_pos_mid.template modify<HostMemSpace>();
-    polar_pos_mid.template sync<DevExeSpace>();
+    num_neighbors.modify_host();
+    num_neighbors.sync_device();
+    ind_neighbors.modify_host();
+    ind_neighbors.sync_device();
+    ind_neighbors_edges.modify_host();
+    ind_neighbors_edges.sync_device();
+    arc_lengths.modify_host();
+    arc_lengths.sync_device();
+    solid_angles.modify_host();
+    solid_angles.sync_device();
+    cart_pos.modify_host();
+    cart_pos.sync_device();
+    cart_pos_mid.modify_host();
+    cart_pos_mid.sync_device();
+    polar_pos.modify_host();
+    polar_pos.sync_device();
+    polar_pos_mid.modify_host();
+    polar_pos_mid.sync_device();
     if (geo_fluxes) {
-      unit_flux.template modify<HostMemSpace>();
-      unit_flux.template sync<DevExeSpace>();
+      unit_flux.modify_host();
+      unit_flux.sync_device();
     }
 
   } else if (nlevel==0) {  // one angle per octant
@@ -370,10 +370,10 @@ GeodesicGrid::GeodesicGrid(int nlev, bool rotate, bool fluxes) :
     }
 
     // sync dual arrays
-    solid_angles.template modify<HostMemSpace>();
-    solid_angles.template sync<DevExeSpace>();
-    cart_pos.template modify<HostMemSpace>();
-    cart_pos.template sync<DevExeSpace>();
+    solid_angles.modify_host();
+    solid_angles.sync_device();
+    cart_pos.modify_host();
+    cart_pos.sync_device();
 
   } else {  // invalid nlevel
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__

@@ -173,8 +173,8 @@ TaskStatus ParticlesBoundaryValues::SetNewPrtclGID() {
   nprtcl_send = counter;
   Kokkos::resize(sendlist, nprtcl_send);
   // sync sendlist device array with host
-  sendlist.template modify<DevExeSpace>();
-  sendlist.template sync<HostMemSpace>();
+  sendlist.modify_device();
+  sendlist.sync_host();
 
   return TaskStatus::complete;
 }
@@ -189,8 +189,8 @@ TaskStatus ParticlesBoundaryValues::CountSendsAndRecvs() {
   namespace KE = Kokkos::Experimental;
   std::sort(KE::begin(sendlist.h_view), KE::end(sendlist.h_view), SortByRank);
   // sync sendlist host array with device.  This results in sorted array on device
-  sendlist.template modify<HostMemSpace>();
-  sendlist.template sync<DevExeSpace>();
+  sendlist.modify_host();
+  sendlist.sync_device();
 
   // load STL::vector of ParticleMessageData with <sendrank, recvrank, nprtcls> for sends
   // from this rank. Length will be nsends; initially this length is unknown
@@ -424,8 +424,8 @@ TaskStatus ParticlesBoundaryValues::RecvAndUnpackPrtcls() {
   namespace KE = Kokkos::Experimental;
   std::sort(KE::begin(sendlist.h_view), KE::end(sendlist.h_view), SortByIndex);
   // sync sendlist host array with device.  This results in sorted array on device
-  sendlist.template modify<HostMemSpace>();
-  sendlist.template sync<DevExeSpace>();
+  sendlist.modify_host();
+  sendlist.sync_device();
 
   // increase size of particle arrays if needed
   int new_npart = pmy_part->nprtcl_thispack + (nprtcl_recv - nprtcl_send);

@@ -106,7 +106,12 @@ inline std::int64_t rotl(std::int64_t i, int s) {
 using DevExeSpace = Kokkos::DefaultExecutionSpace;
 using HostExeSpace = Kokkos::DefaultHostExecutionSpace;
 using DevMemSpace = Kokkos::DefaultExecutionSpace::memory_space;
+#if defined(KOKKOS_IMPL_HIP_UNIFIED_MEMORY)
+// Match host-accessible HIP mirrors; DualView sides use the named side APIs.
+using HostMemSpace = Kokkos::HIPSpace;
+#else
 using HostMemSpace = Kokkos::HostSpace;
+#endif
 using ScratchMemSpace = DevExeSpace::scratch_memory_space;
 using LayoutWrapper = Kokkos::LayoutRight;                // increments last index fastest
 using TeamMember_t = Kokkos::TeamPolicy<>::member_type;   // for Kokkos thread teams

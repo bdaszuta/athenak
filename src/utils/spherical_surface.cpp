@@ -78,8 +78,8 @@ SphericalSurface::SphericalSurface(MeshBlockPack *pmy_pack, int ntheta,
   }
 
   // Sync to GPU.
-  radii.template modify<HostMemSpace>();
-  radii.template sync<DevExeSpace>();
+  radii.modify_host();
+  radii.sync_device();
 
   Kokkos::realloc(int_weights, nangles);
   Kokkos::realloc(polar_pos, nangles, 2);
@@ -152,11 +152,11 @@ void SphericalSurface::InitializeAngleAndWeights() {
   }
 
   // sync to device
-  polar_pos.template modify<HostMemSpace>();
-  polar_pos.template sync<DevExeSpace>();
+  polar_pos.modify_host();
+  polar_pos.sync_device();
 
-  int_weights.template modify<HostMemSpace>();
-  int_weights.template sync<DevExeSpace>();
+  int_weights.modify_host();
+  int_weights.sync_device();
 }
 
 void SphericalSurface::InitializeRadius() {
@@ -171,8 +171,8 @@ void SphericalSurface::InitializeRadius() {
       cart_pos.h_view(p, 2) = rad * cos(theta) + zc;
     }
   }
-  cart_pos.template modify<HostMemSpace>();
-  cart_pos.template sync<DevExeSpace>();
+  cart_pos.modify_host();
+  cart_pos.sync_device();
 }
 
 //----------------------------------------------------------------------------------------
@@ -245,8 +245,8 @@ void SphericalSurface::SetInterpolationIndices() {
   }
 
   // sync dual arrays
-  interp_indcs.template modify<HostMemSpace>();
-  interp_indcs.template sync<DevExeSpace>();
+  interp_indcs.modify_host();
+  interp_indcs.sync_device();
 
   return;
 }
@@ -344,8 +344,8 @@ void SphericalSurface::SetInterpolationWeights() {
   }
 
   // sync dual arrays
-  interp_wghts.template modify<HostMemSpace>();
-  interp_wghts.template sync<DevExeSpace>();
+  interp_wghts.modify_host();
+  interp_wghts.sync_device();
 
   return;
 }
@@ -397,8 +397,8 @@ void SphericalSurface::InterpolateToSphere(int var_ind,
       });
 
   // sync dual arrays
-  interp_vals.template modify<DevExeSpace>();
-  interp_vals.template sync<HostMemSpace>();
+  interp_vals.modify_device();
+  interp_vals.sync_host();
 
   return;
 }

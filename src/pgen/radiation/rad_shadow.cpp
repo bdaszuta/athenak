@@ -52,10 +52,10 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       i_in.h_view(n,BoundaryFace::inner_x1) = 0.0;
     }
   }
-  u_in.template modify<HostMemSpace>();
-  u_in.template sync<DevExeSpace>();
-  i_in.template modify<HostMemSpace>();
-  i_in.template sync<DevExeSpace>();
+  u_in.modify_host();
+  u_in.sync_device();
+  i_in.modify_host();
+  i_in.sync_device();
 
   // error check input flags
   int geodesic_nlevel = pin->GetInteger("radiation", "nlevel");

@@ -63,8 +63,8 @@ ShearingBox::ShearingBox(MeshBlockPack *ppack, ParameterInput *pin) :
     x1bndry_mbgid.h_view(1,m) = tmp_ox1bndry_gid[m];
   }
   // sync with device
-  x1bndry_mbgid.template modify<HostMemSpace>();
-  x1bndry_mbgid.template sync<DevExeSpace>();
+  x1bndry_mbgid.modify_host();
+  x1bndry_mbgid.sync_device();
 
 
 #if MPI_PARALLEL_ENABLED

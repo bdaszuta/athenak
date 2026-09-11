@@ -238,12 +238,12 @@ void Coordinates::UpdateExcisionMasks() {
     }
 
     // sync to device
-    hcenter.template modify<HostMemSpace>();
-    hcenter.template sync<DevExeSpace>();
-    hradius.template modify<HostMemSpace>();
-    hradius.template sync<DevExeSpace>();
-    hfound.template modify<HostMemSpace>();
-    hfound.template sync<DevExeSpace>();
+    hcenter.modify_host();
+    hcenter.sync_device();
+    hradius.modify_host();
+    hradius.sync_device();
+    hfound.modify_host();
+    hfound.sync_device();
 
     par_for("set_excision_horizon", DevExeSpace(),0,nmb1,0,(n3-1),0,(n2-1),0,(n1-1),
     KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {

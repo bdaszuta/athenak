@@ -224,12 +224,12 @@ void TurbulenceDriver::Initialize() {
     }
   }
 
-  kx_mode_.template modify<HostMemSpace>();
-  kx_mode_.template sync<DevExeSpace>();
-  ky_mode_.template modify<HostMemSpace>();
-  ky_mode_.template sync<DevExeSpace>();
-  kz_mode_.template modify<HostMemSpace>();
-  kz_mode_.template sync<DevExeSpace>();
+  kx_mode_.modify_host();
+  kx_mode_.sync_device();
+  ky_mode_.modify_host();
+  ky_mode_.sync_device();
+  kz_mode_.modify_host();
+  kz_mode_.sync_device();
 
   auto &size = pmy_pack->pmb->mb_size;
 
@@ -609,56 +609,56 @@ TaskStatus TurbulenceDriver::InitializeModes(Driver *pdrive, int stage) {
     }
   }
 
-  xccc_.template modify<HostMemSpace>();
-  xccc_.template sync<DevExeSpace>();
-  xccs_.template modify<HostMemSpace>();
-  xccs_.template sync<DevExeSpace>();
-  xcsc_.template modify<HostMemSpace>();
-  xcsc_.template sync<DevExeSpace>();
-  xcss_.template modify<HostMemSpace>();
-  xcss_.template sync<DevExeSpace>();
-  xscc_.template modify<HostMemSpace>();
-  xscc_.template sync<DevExeSpace>();
-  xscs_.template modify<HostMemSpace>();
-  xscs_.template sync<DevExeSpace>();
-  xssc_.template modify<HostMemSpace>();
-  xssc_.template sync<DevExeSpace>();
-  xsss_.template modify<HostMemSpace>();
-  xsss_.template sync<DevExeSpace>();
+  xccc_.modify_host();
+  xccc_.sync_device();
+  xccs_.modify_host();
+  xccs_.sync_device();
+  xcsc_.modify_host();
+  xcsc_.sync_device();
+  xcss_.modify_host();
+  xcss_.sync_device();
+  xscc_.modify_host();
+  xscc_.sync_device();
+  xscs_.modify_host();
+  xscs_.sync_device();
+  xssc_.modify_host();
+  xssc_.sync_device();
+  xsss_.modify_host();
+  xsss_.sync_device();
 
-  yccc_.template modify<HostMemSpace>();
-  yccc_.template sync<DevExeSpace>();
-  yccs_.template modify<HostMemSpace>();
-  yccs_.template sync<DevExeSpace>();
-  ycsc_.template modify<HostMemSpace>();
-  ycsc_.template sync<DevExeSpace>();
-  ycss_.template modify<HostMemSpace>();
-  ycss_.template sync<DevExeSpace>();
-  yscc_.template modify<HostMemSpace>();
-  yscc_.template sync<DevExeSpace>();
-  yscs_.template modify<HostMemSpace>();
-  yscs_.template sync<DevExeSpace>();
-  yssc_.template modify<HostMemSpace>();
-  yssc_.template sync<DevExeSpace>();
-  ysss_.template modify<HostMemSpace>();
-  ysss_.template sync<DevExeSpace>();
+  yccc_.modify_host();
+  yccc_.sync_device();
+  yccs_.modify_host();
+  yccs_.sync_device();
+  ycsc_.modify_host();
+  ycsc_.sync_device();
+  ycss_.modify_host();
+  ycss_.sync_device();
+  yscc_.modify_host();
+  yscc_.sync_device();
+  yscs_.modify_host();
+  yscs_.sync_device();
+  yssc_.modify_host();
+  yssc_.sync_device();
+  ysss_.modify_host();
+  ysss_.sync_device();
 
-  zccc_.template modify<HostMemSpace>();
-  zccc_.template sync<DevExeSpace>();
-  zccs_.template modify<HostMemSpace>();
-  zccs_.template sync<DevExeSpace>();
-  zcsc_.template modify<HostMemSpace>();
-  zcsc_.template sync<DevExeSpace>();
-  zcss_.template modify<HostMemSpace>();
-  zcss_.template sync<DevExeSpace>();
-  zscc_.template modify<HostMemSpace>();
-  zscc_.template sync<DevExeSpace>();
-  zscs_.template modify<HostMemSpace>();
-  zscs_.template sync<DevExeSpace>();
-  zssc_.template modify<HostMemSpace>();
-  zssc_.template sync<DevExeSpace>();
-  zsss_.template modify<HostMemSpace>();
-  zsss_.template sync<DevExeSpace>();
+  zccc_.modify_host();
+  zccc_.sync_device();
+  zccs_.modify_host();
+  zccs_.sync_device();
+  zcsc_.modify_host();
+  zcsc_.sync_device();
+  zcss_.modify_host();
+  zcss_.sync_device();
+  zscc_.modify_host();
+  zscc_.sync_device();
+  zscs_.modify_host();
+  zscs_.sync_device();
+  zssc_.modify_host();
+  zssc_.sync_device();
+  zsss_.modify_host();
+  zsss_.sync_device();
 
   auto xcos_ = xcos;
   auto xsin_ = xsin;

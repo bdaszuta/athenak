@@ -92,8 +92,8 @@ void SphericalGrid::SetInterpolationCoordinates() {
   }
 
   // sync dual arrays
-  interp_coord.template modify<HostMemSpace>();
-  interp_coord.template sync<DevExeSpace>();
+  interp_coord.modify_host();
+  interp_coord.sync_device();
 
   return;
 }
@@ -153,8 +153,8 @@ void SphericalGrid::SetInterpolationIndices() {
   }
 
   // sync dual arrays
-  interp_indcs.template modify<HostMemSpace>();
-  interp_indcs.template sync<DevExeSpace>();
+  interp_indcs.modify_host();
+  interp_indcs.sync_device();
 
   return;
 }
@@ -246,8 +246,8 @@ void SphericalGrid::SetInterpolationWeights() {
   }
 
   // sync dual arrays
-  interp_wghts.template modify<HostMemSpace>();
-  interp_wghts.template sync<DevExeSpace>();
+  interp_wghts.modify_host();
+  interp_wghts.sync_device();
 
   return;
 }
@@ -307,8 +307,8 @@ void SphericalGrid::InterpolateToSphere(int vs, int ve, DvceArray5D<Real>& val) 
   });
 
   // sync dual arrays
-  interp_vals.template modify<DevExeSpace>();
-  interp_vals.template sync<HostMemSpace>();
+  interp_vals.modify_device();
+  interp_vals.sync_host();
 
   return;
 }

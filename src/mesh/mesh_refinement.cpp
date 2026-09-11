@@ -86,10 +86,10 @@ MeshRefinement::MeshRefinement(Mesh *pm, ParameterInput *pin) :
     fc_amr_repair.h_view(m) = 0;
     ncyc_since_ref(m) = 0;
   }
-  refine_flag.template modify<HostMemSpace>();
-  refine_flag.template sync<DevExeSpace>();
-  fc_amr_repair.template modify<HostMemSpace>();
-  fc_amr_repair.template sync<DevExeSpace>();
+  refine_flag.modify_host();
+  refine_flag.sync_device();
+  fc_amr_repair.modify_host();
+  fc_amr_repair.sync_device();
 
   // initialize interpolation weights for prolongation and restriction
   InitInterpWghts();
@@ -210,8 +210,8 @@ void MeshRefinement::CheckForRefinement(MeshBlockPack* pmbp) {
   for (int m=0; m<(pmy_mesh->nmb_total); ++m) {
     refine_flag.h_view(m) = 0;
   }
-  refine_flag.template modify<HostMemSpace>();
-  refine_flag.template sync<DevExeSpace>();
+  refine_flag.modify_host();
+  refine_flag.sync_device();
 
   // increment cycle counter for each MB
   for (int m=0; m<(pmy_mesh->nmb_total); ++m) {
@@ -272,8 +272,8 @@ void MeshRefinement::CheckForRefinement(MeshBlockPack* pmbp) {
                    pmy_mesh->gids_eachrank, MPI_INT, MPI_COMM_WORLD);
 #endif
   // sync host array with device
-  refine_flag.template modify<HostMemSpace>();
-  refine_flag.template sync<DevExeSpace>();
+  refine_flag.modify_host();
+  refine_flag.sync_device();
   return;
 }
 
@@ -516,8 +516,8 @@ void MeshRefinement::RedistAndRefineMeshBlocks(ParameterInput *pin, int nnew, in
     }
   }
   //  All ranks have copy of refine_flag over all MBs. So just sync host view with device
-  refine_flag.template modify<HostMemSpace>();
-  refine_flag.template sync<DevExeSpace>();
+  refine_flag.modify_host();
+  refine_flag.sync_device();
 
   hydro::Hydro* phydro = pm->pmb_pack->phydro;
   mhd::MHD* pmhd = pm->pmb_pack->pmhd;
@@ -617,8 +617,8 @@ void MeshRefinement::RedistAndRefineMeshBlocks(ParameterInput *pin, int nnew, in
   for (int m=0; m<new_nmb_total; ++m) {
     new_to_old.h_view(m) = newtoold[m];
   }
-  new_to_old.template modify<HostMemSpace>();
-  new_to_old.template sync<DevExeSpace>();
+  new_to_old.modify_host();
+  new_to_old.sync_device();
 
   // Step 9.
   // Coarse arrays are now up-to-date, either through copies on same rank or MPI calls
@@ -695,8 +695,8 @@ void MeshRefinement::RedistAndRefineMeshBlocks(ParameterInput *pin, int nnew, in
   for (int m=0; m<new_nmb_total; ++m) {
     fc_amr_repair.h_view(m) = (refine_flag.h_view(newtoold[m]) != 0) ? 1 : 0;
   }
-  fc_amr_repair.template modify<HostMemSpace>();
-  fc_amr_repair.template sync<DevExeSpace>();
+  fc_amr_repair.modify_host();
+  fc_amr_repair.sync_device();
 
   // clean-up
   delete [] newtoold;
@@ -1480,14 +1480,14 @@ void MeshRefinement::InitInterpWghts() {
   res_4th_e.h_view(4) = -0.0390625;
 
   // sync dual arrays
-  pro_2nd.template modify<HostMemSpace>();
-  pro_2nd.template sync<DevExeSpace>();
-  res_2nd.template modify<HostMemSpace>();
-  res_2nd.template sync<DevExeSpace>();
-  pro_4th.template modify<HostMemSpace>();
-  pro_4th.template sync<DevExeSpace>();
-  res_4th.template modify<HostMemSpace>();
-  res_4th.template sync<DevExeSpace>();
-  res_4th_e.template modify<HostMemSpace>();
-  res_4th_e.template sync<DevExeSpace>();
+  pro_2nd.modify_host();
+  pro_2nd.sync_device();
+  res_2nd.modify_host();
+  res_2nd.sync_device();
+  pro_4th.modify_host();
+  pro_4th.sync_device();
+  res_4th.modify_host();
+  res_4th.sync_device();
+  res_4th_e.modify_host();
+  res_4th_e.sync_device();
 }

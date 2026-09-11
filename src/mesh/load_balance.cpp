@@ -264,8 +264,8 @@ void MeshRefinement::InitRecvAMR(int nleaf) {
     }
   }
   // Sync dual array
-  recvbuf.template modify<HostMemSpace>();
-  recvbuf.template sync<DevExeSpace>();
+  recvbuf.modify_host();
+  recvbuf.sync_device();
   // Note: No need to reallocate recv_data buffer as it is fixed length
 
   // Step 3. (InitRecvAMR)
@@ -521,8 +521,8 @@ void MeshRefinement::PackAndSendAMR(int nleaf) {
     }
   }
   // Sync dual array
-  sendbuf.template modify<HostMemSpace>();
-  sendbuf.template sync<DevExeSpace>();
+  sendbuf.modify_host();
+  sendbuf.sync_device();
   // Note: No need to reallocate send_date as it is fixed length
 
   // Step 3. (PackAndSendAMR)

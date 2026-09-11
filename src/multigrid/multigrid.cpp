@@ -666,11 +666,11 @@ void Multigrid::SetFromRootGrid(bool folddata) {
       }
     }
   }
-  u_[current_level_].template modify<HostExeSpace>();
-  u_[current_level_].template sync<DevExeSpace>();
+  u_[current_level_].modify_host();
+  u_[current_level_].sync_device();
   if (folddata) {
-    uold_[current_level_].template modify<HostExeSpace>();
-    uold_[current_level_].template sync<DevExeSpace>();
+    uold_[current_level_].modify_host();
+    uold_[current_level_].sync_device();
   }
   return;
 }

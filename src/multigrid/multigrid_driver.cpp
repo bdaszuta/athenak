@@ -491,8 +491,8 @@ void MultigridDriver::TransferFromBlocksToRoot(bool initflag) {
         rootbuf.d_view(v+nv, m+padding) = u(m, v, ngh_mb, ngh_mb, ngh_mb);
     }
   });
-  rootbuf.template modify<DevExeSpace>();
-  rootbuf.template sync<HostExeSpace>();
+  rootbuf.modify_device();
+  rootbuf.sync_host();
 #if MPI_PARALLEL_ENABLED
   int ncomm = initflag ? nv : 2*nv;
   for (int v = 0; v < ncomm; ++v) {

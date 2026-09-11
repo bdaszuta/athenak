@@ -1793,8 +1793,8 @@ void TorusFluxes(HistoryData *pdata, Mesh *pm) {
       grids[g]->InterpolateToSphere(3, bcc0_);
       Kokkos::realloc(interpolated_bcc, grids[g]->nangles, 3);
       Kokkos::deep_copy(interpolated_bcc, grids[g]->interp_vals);
-      interpolated_bcc.template modify<DevExeSpace>();
-      interpolated_bcc.template sync<HostMemSpace>();
+      interpolated_bcc.modify_device();
+      interpolated_bcc.sync_host();
     }
     grids[g]->InterpolateToSphere(nvars, w0_);
 

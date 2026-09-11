@@ -562,12 +562,12 @@ void FastFlow::InitialGuess() {
     }
 
     // Sync to device
-    a0.template modify<HostMemSpace>();
-    a0.template sync<DevExeSpace>();
-    ac.template modify<HostMemSpace>();
-    ac.template sync<DevExeSpace>();
-    as.template modify<HostMemSpace>();
-    as.template sync<DevExeSpace>();
+    a0.modify_host();
+    a0.sync_device();
+    ac.modify_host();
+    ac.sync_device();
+    as.modify_host();
+    as.sync_device();
     return;
   }
 
@@ -587,12 +587,12 @@ void FastFlow::InitialGuess() {
     a0.h_view(0) = Kokkos::sqrt(4.0 * M_PI) * initial_radius;
   }
   // Sync to device
-  a0.template modify<HostMemSpace>();
-  a0.template sync<DevExeSpace>();
-  ac.template modify<HostMemSpace>();
-  ac.template sync<DevExeSpace>();
-  as.template modify<HostMemSpace>();
-  as.template sync<DevExeSpace>();
+  a0.modify_host();
+  a0.sync_device();
+  ac.modify_host();
+  ac.sync_device();
+  as.modify_host();
+  as.sync_device();
 }
 
 //----------------------------------------------------------------------------------------
@@ -700,8 +700,8 @@ void FastFlow::MetricInterp() {
   });
 
   // Sync back to host.
-  havepoint.template modify<DevExeSpace>();
-  havepoint.template sync<HostMemSpace>();
+  havepoint.modify_device();
+  havepoint.sync_host();
 }
 template void FastFlow::MetricInterp<2>();
 template void FastFlow::MetricInterp<3>();
@@ -934,12 +934,12 @@ void FastFlow::UpdateFlowSpectralComponents() {
   delete[] specs;
 
   // Sync to back to device.
-  a0.template modify<HostMemSpace>();
-  a0.template sync<DevExeSpace>();
-  ac.template modify<HostMemSpace>();
-  ac.template sync<DevExeSpace>();
-  as.template modify<HostMemSpace>();
-  as.template sync<DevExeSpace>();
+  a0.modify_host();
+  a0.sync_device();
+  ac.modify_host();
+  ac.sync_device();
+  as.modify_host();
+  as.sync_device();
 }
 
 //----------------------------------------------------------------------------------------
@@ -1431,8 +1431,8 @@ void FastFlow::SurfaceIntegrals() {
   #endif
 
   // Sync rho back to host.
-  rho.template modify<DevExeSpace>();
-  rho.template sync<HostMemSpace>();
+  rho.modify_device();
+  rho.sync_host();
 }
 
 //----------------------------------------------------------------------------------------
@@ -1516,40 +1516,40 @@ void FastFlow::ComputeSphericalHarmonics() {
   //       This will come in handy to speed up the rest
   //       of the code.
   // **SCALARS**
-  Y0.template modify<DevExeSpace>();
-  Y0.template sync<HostMemSpace>();
-  Yc.template modify<DevExeSpace>();
-  Yc.template sync<HostMemSpace>();
-  Ys.template modify<DevExeSpace>();
-  Ys.template sync<HostMemSpace>();
+  Y0.modify_device();
+  Y0.sync_host();
+  Yc.modify_device();
+  Yc.sync_host();
+  Ys.modify_device();
+  Ys.sync_host();
 
   // **FIRST DERIVATIVES**
-  dY0dth.template modify<DevExeSpace>();
-  dY0dth.template sync<HostMemSpace>();
-  dYcdth.template modify<DevExeSpace>();
-  dYcdth.template sync<HostMemSpace>();
-  dYsdth.template modify<DevExeSpace>();
-  dYsdth.template sync<HostMemSpace>();
-  dYcdph.template modify<DevExeSpace>();
-  dYcdph.template sync<HostMemSpace>();
-  dYsdph.template modify<DevExeSpace>();
-  dYsdph.template sync<HostMemSpace>();
+  dY0dth.modify_device();
+  dY0dth.sync_host();
+  dYcdth.modify_device();
+  dYcdth.sync_host();
+  dYsdth.modify_device();
+  dYsdth.sync_host();
+  dYcdph.modify_device();
+  dYcdph.sync_host();
+  dYsdph.modify_device();
+  dYsdph.sync_host();
 
   // **SECOND DERIVATIVES**
-  dY0dth2.template modify<DevExeSpace>();
-  dY0dth2.template sync<HostMemSpace>();
-  dYcdth2.template modify<DevExeSpace>();
-  dYcdth2.template sync<HostMemSpace>();
-  dYsdth2.template modify<DevExeSpace>();
-  dYsdth2.template sync<HostMemSpace>();
-  dYcdph2.template modify<DevExeSpace>();
-  dYcdph2.template sync<HostMemSpace>();
-  dYsdph2.template modify<DevExeSpace>();
-  dYsdph2.template sync<HostMemSpace>();
-  dYcdthdph.template modify<DevExeSpace>();
-  dYcdthdph.template sync<HostMemSpace>();
-  dYsdthdph.template modify<DevExeSpace>();
-  dYsdthdph.template sync<HostMemSpace>();
+  dY0dth2.modify_device();
+  dY0dth2.sync_host();
+  dYcdth2.modify_device();
+  dYcdth2.sync_host();
+  dYsdth2.modify_device();
+  dYsdth2.sync_host();
+  dYcdph2.modify_device();
+  dYcdph2.sync_host();
+  dYsdph2.modify_device();
+  dYsdph2.sync_host();
+  dYcdthdph.modify_device();
+  dYcdthdph.sync_host();
+  dYsdthdph.modify_device();
+  dYsdthdph.sync_host();
 }
 
 //----------------------------------------------------------------------------------------

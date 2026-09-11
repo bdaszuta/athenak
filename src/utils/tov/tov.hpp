@@ -304,17 +304,17 @@ TOVStar TOVStar::ConstructTOV(ParameterInput *pin, TOVEOS& eos, bool verbose) {
   }
 
   // Sync the views to the GPU
-  tov.R.template modify<HostMemSpace>();
-  tov.R_iso.template modify<HostMemSpace>();
-  tov.M.template modify<HostMemSpace>();
-  tov.alpha.template modify<HostMemSpace>();
-  tov.P.template modify<HostMemSpace>();
+  tov.R.modify_host();
+  tov.R_iso.modify_host();
+  tov.M.modify_host();
+  tov.alpha.modify_host();
+  tov.P.modify_host();
 
-  tov.R.template sync<DevExeSpace>();
-  tov.R_iso.template sync<DevExeSpace>();
-  tov.M.template sync<DevExeSpace>();
-  tov.alpha.template sync<DevExeSpace>();
-  tov.P.template sync<DevExeSpace>();
+  tov.R.sync_device();
+  tov.R_iso.sync_device();
+  tov.M.sync_device();
+  tov.alpha.sync_device();
+  tov.P.sync_device();
 
   return tov;
 }

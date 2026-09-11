@@ -519,6 +519,6 @@ void JeansRefinement(MeshBlockPack *pmbp) {
     }
   });
 
-  refine_flag.template modify<DevExeSpace>();
-  refine_flag.template sync<HostMemSpace>();
+  refine_flag.modify_device();
+  refine_flag.sync_host();
 }

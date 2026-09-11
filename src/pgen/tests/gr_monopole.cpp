@@ -660,8 +660,8 @@ void MonopoleDiagnostic(ParameterInput *pin, Mesh *pm) {
   DualArray2D<Real> interpolated_bcc;
   Kokkos::realloc(interpolated_bcc, psph->nangles, 3);
   Kokkos::deep_copy(interpolated_bcc, psph->interp_vals);
-  interpolated_bcc.template modify<DevExeSpace>();
-  interpolated_bcc.template sync<HostMemSpace>();
+  interpolated_bcc.modify_device();
+  interpolated_bcc.sync_host();
 
   // interpolate primitives
   psph->InterpolateToSphere(nvars, w0_);

@@ -60,8 +60,8 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   u_in.h_view(IDN,BoundaryFace::inner_x1) = dl;
   u_in.h_view(IM1,BoundaryFace::inner_x1) = dl*ul;
   u_in.h_view(IEN,BoundaryFace::inner_x1) = pl/gm1 + 0.5*dl*(ul*ul);
-  u_in.template modify<HostMemSpace>();
-  u_in.template sync<DevExeSpace>();
+  u_in.modify_host();
+  u_in.sync_device();
 
   // capture variables for the kernel
   auto &indcs = pmbp->pmesh->mb_indcs;

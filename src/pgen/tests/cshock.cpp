@@ -218,8 +218,8 @@ void ProblemGenerator::CShock(ParameterInput *pin, const bool restart) {
     shksol.h_view(n).bx  /= static_cast<Real> (NFACT);
     shksol.h_view(n).by  /= static_cast<Real> (NFACT);
   }
-  shksol.template modify<HostMemSpace>();
-  shksol.template sync<DevExeSpace>();
+  shksol.modify_host();
+  shksol.sync_device();
 
   // set inflow state in BoundaryValues depending on shock direction, sync to device
   auto un_in = pmbp->phydro->pbval_u->u_in;
@@ -256,12 +256,12 @@ void ProblemGenerator::CShock(ParameterInput *pin, const bool restart) {
     bi_in.h_view(IBX,BoundaryFace::inner_x3) = init.by;
     bi_in.h_view(IBY,BoundaryFace::inner_x3) = 0.0;
   }
-  un_in.template modify<HostMemSpace>();
-  un_in.template sync<DevExeSpace>();
-  ui_in.template modify<HostMemSpace>();
-  ui_in.template sync<DevExeSpace>();
-  bi_in.template modify<HostMemSpace>();
-  bi_in.template sync<DevExeSpace>();
+  un_in.modify_host();
+  un_in.sync_device();
+  ui_in.modify_host();
+  ui_in.sync_device();
+  bi_in.modify_host();
+  bi_in.sync_device();
 
   // capture variables for the kernel
   auto &indcs = pmy_mesh_->mb_indcs;
@@ -286,8 +286,8 @@ void ProblemGenerator::CShock(ParameterInput *pin, const bool restart) {
       ioff.h_view(m) = lloc.lx1*(pm->mb_indcs.nx1);
     }
     // sync with device
-    ioff.template modify<HostMemSpace>();
-    ioff.template sync<DevExeSpace>();
+    ioff.modify_host();
+    ioff.sync_device();
 
     par_for("pgen_cshock", DevExeSpace(),0,(pmbp->nmb_thispack-1),ks,ke,js,je,is,ie,
     KOKKOS_LAMBDA(int m,int k, int j, int i) {
@@ -316,8 +316,8 @@ void ProblemGenerator::CShock(ParameterInput *pin, const bool restart) {
       joff.h_view(m) = lloc.lx2*(pm->mb_indcs.nx2);
     }
     // sync with device
-    joff.template modify<HostMemSpace>();
-    joff.template sync<DevExeSpace>();
+    joff.modify_host();
+    joff.sync_device();
 
     par_for("pgen_cshock", DevExeSpace(),0,(pmbp->nmb_thispack-1),ks,ke,js,je,is,ie,
     KOKKOS_LAMBDA(int m,int k, int j, int i) {
@@ -346,8 +346,8 @@ void ProblemGenerator::CShock(ParameterInput *pin, const bool restart) {
       koff.h_view(m) = lloc.lx3*(pm->mb_indcs.nx3);
     }
     // sync with device
-    koff.template modify<HostMemSpace>();
-    koff.template sync<DevExeSpace>();
+    koff.modify_host();
+    koff.sync_device();
 
     par_for("pgen_cshock", DevExeSpace(),0,(pmbp->nmb_thispack-1),ks,ke,js,je,is,ie,
     KOKKOS_LAMBDA(int m,int k, int j, int i) {

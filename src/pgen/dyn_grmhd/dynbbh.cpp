@@ -1044,8 +1044,8 @@ void RefineAlphaMin(MeshBlockPack *pmbp) {
   });
 
   // sync host and device
-  refine_flag.template modify<DevExeSpace>();
-  refine_flag.template sync<HostMemSpace>();
+  refine_flag.modify_device();
+  refine_flag.sync_host();
 }
 
 void RefineTracker(MeshBlockPack *pmbp) {
@@ -1108,15 +1108,15 @@ void RefineTracker(MeshBlockPack *pmbp) {
 
     if (dmin2_bh1 < SQR(bbh.radius_thr) || dmin2_bh2 < SQR(bbh.radius_thr) ||
         iscontained_bh1 || iscontained_bh2) {
-      refine_flag.d_view(m + mbs) = 1;
+      refine_flag.h_view(m + mbs) = 1;
     } else {
-      refine_flag.d_view(m + mbs) = -1;
+      refine_flag.h_view(m + mbs) = -1;
     }
   }
 
-  // sync host and device
-  refine_flag.template modify<HostMemSpace>();
-  refine_flag.template sync<DevExeSpace>();
+  // The tracker loop writes on the host; publish its flags to the device.
+  refine_flag.modify_host();
+  refine_flag.sync_device();
 }
 
 } // namespace

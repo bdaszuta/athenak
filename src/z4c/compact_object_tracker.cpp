@@ -183,8 +183,8 @@ void CompactObjectTracker::EvolveTracker(MeshBlockPack *pmbp) {
                                             ic + indcs.is + i - 1);
           });
 
-          alp.template modify<DevMemSpace>();
-          alp.template sync<typename DualArray3D<Real>::host_mirror_space>();
+          alp.modify_device();
+          alp.sync_host();
 
           Real alp_min = std::numeric_limits<Real>::max();
           for (int k = 0; k < 3; ++k) {
