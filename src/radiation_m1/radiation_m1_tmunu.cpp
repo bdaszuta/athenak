@@ -32,7 +32,9 @@ TaskStatus RadiationM1::SetTmunu(Driver* pdrive, int stage) {
   adm::ADM::ADM_vars& adm = pmy_pack->padm->adm;
   auto& tmunu = pmy_pack->ptmunu->tmunu;
   RadiationM1Params& params_ = pmy_pack->pradm1->params;
-  if (params_.backreact_tmunu) {
+  // One-way M1 evolution must also suppress its geometric feedback. Preserve
+  // the configured switch so reopening coupling does not force feedback on.
+  if (params_.backreact_tmunu && coupling_enabled_) {
     DvceArray5D<Real> w0_ = w0;  // just a hack to compile on SYC
     if (ismhd) {
       w0_ = pmy_pack->pmhd->w0;

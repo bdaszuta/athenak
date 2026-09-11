@@ -124,6 +124,22 @@ class EOSCompOSE : public EOSPolicyInterface, public LogPolicy, public SupportsE
     return temperature_from_var(ECLOGP, log_p, n, Y[0]);
   }
 
+  /// Invert entropy per baryon [k_B] at n [fm^-3] and dimensionless Y[0] to T [MeV].
+  /// ECENT is the unlogged CompOSE Q2 row, copied unchanged by ReadTableFromFile.
+  /// Uses the existing temperature_from_var search and interpolation in log2_(T),
+  /// without changing the shared energy/pressure inversion policy.
+  ///
+  /// The caller must supply finite, in-domain n and Y[0] and an entropy admitting a
+  /// nondegenerate temperature bracket. Unlike ECLOGE/ECLOGP, ECENT has no endpoint
+  /// clamp: an unbracketed entropy prints a diagnostic and asserts. With assertions
+  /// disabled, the existing helper continues by extrapolating the last temperature
+  /// interval; the result need not be in range or finite. No floor or new out-of-range
+  /// policy is introduced here, and density/composition weights retain extrapolation.
+  KOKKOS_INLINE_FUNCTION Real TemperatureFromEntropy(Real n, Real s, Real *Y) const {
+    assert (m_initialized);
+    return temperature_from_var(ECENT, s, n, Y[0]);
+  }
+
   /// Calculate the energy density using.
   KOKKOS_INLINE_FUNCTION Real Energy(Real n, Real T, const Real *Y) const {
     assert (m_initialized);

@@ -137,18 +137,17 @@ TaskStatus RadiationM1::CopyCons(Driver *pdrive, int stage) {
 
 //----------------------------------------------------------------------------------------
 //! \fn  void RadiationM1::SetMask
-//! \brief Sets the radiation excision mask from the coordinate (horizon/lapse/fixed)
-//! excision mask and zeroes the radiation fields in masked cells. Mirrors THC's
-//! THC_M1_SetMask, which derives thc_m1_mask from the matter (hydro) excision mask.
+//! \brief Compose global lifecycle disabling with coordinate excision and zero
+//! the radiation fields in masked cells. Coordinate excision retains the
+//! accepted horizon/lapse/fixed mask; lifecycle disabling is species-independent.
 //! Runs each stage before the closure so that closure/opacities/Tmunu/update (all of
 //! which already honor radiation_mask) see an up-to-date mask, and so that fluxes
 //! across the excision boundary are reconstructed from zeroed states.
 TaskStatus RadiationM1::SetMask(Driver *pdrive, int stage) {
-  // If BH excision is disabled, the coordinate masks are not allocated and
-  // radiation_mask remains all-false (set at construction); nothing to do.
-  if (!pmy_pack->pcoord->coord_data.bh_excise) {
-    return TaskStatus::complete;
-  }
+  // Always rematerialize after AMR and on masked-to-unmasked transitions.
+  // Short-circuit the coordinate View access when that View is unallocated.
+  const bool bh_excise = pmy_pack->pcoord->coord_data.bh_excise;
+  const bool disabled = !evolution_enabled_;
 
   auto &indcs = pmy_pack->pmesh->mb_indcs;
   int &is = indcs.is, &ie = indcs.ie;
@@ -166,6 +165,7 @@ TaskStatus RadiationM1::SetMask(Driver *pdrive, int stage) {
   int keg = (indcs.nx3 > 1) ? ke + indcs.ng : ke;
 
   auto &u0_ = u0;
+  auto &chi_ = chi;
   auto &mask_ = radiation_mask;
   auto &excision_ = pmy_pack->pcoord->excision_floor;
   auto &nvars_ = nvars;
@@ -174,10 +174,11 @@ TaskStatus RadiationM1::SetMask(Driver *pdrive, int stage) {
   par_for(
       "radiation_m1_setmask", DevExeSpace(), 0, nmb1, ksg, keg, jsg, jeg, isg, ieg,
       KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
-        bool excise = excision_(m, k, j, i);
+        bool excise = disabled || (bh_excise && excision_(m, k, j, i));
         mask_(m, k, j, i) = excise;
         if (excise) {
           for (int nuidx = 0; nuidx < nspecies_; ++nuidx) {
+            chi_(m, nuidx, k, j, i) = 0;
             u0_(m, CombinedIdx(nuidx, M1_E_IDX, nvars_), k, j, i) = 0;
             u0_(m, CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, i) = 0;
             u0_(m, CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, i) = 0;
@@ -190,6 +191,13 @@ TaskStatus RadiationM1::SetMask(Driver *pdrive, int stage) {
       });
   // FloorAndCalcClosure recomputes closure; there is no cache to invalidate.
   return TaskStatus::complete;
+}
+
+// The same-value call is intentional: initialization/restart and AMR may have
+// changed the active slots since the host lifecycle flag was last assigned.
+void RadiationM1::SetEvolutionEnabled(bool enabled) {
+  evolution_enabled_ = enabled;
+  SetMask(nullptr, -1);
 }
 
 //----------------------------------------------------------------------------------------

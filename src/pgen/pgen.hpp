@@ -99,6 +99,9 @@ class ProblemGenerator {
   void UserProblem(ParameterInput *pin, const bool restart);
 
  private:
+  // A user pgen may append local tasks once; startup AMR can then reevaluate
+  // its initial data on the same ProblemGenerator without duplicating tasks.
+  bool user_tasks_enrolled_ = false;
   bool single_file_per_rank; // for restart file naming
   Mesh* pmy_mesh_;
 };

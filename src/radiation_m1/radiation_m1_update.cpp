@@ -128,7 +128,10 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
 
   bool &multi_d = pmy_pack->pmesh->multi_d;
   bool &three_d = pmy_pack->pmesh->three_d;
-  auto &params_ = pmy_pack->pradm1->params;
+  // Gate material feedback in the captured parameters without overwriting the
+  // configured backreaction setting. Recoupling restores only that setting.
+  auto params_ = pmy_pack->pradm1->params;
+  params_.backreact = params_.backreact && coupling_enabled_;
 
   DvceArray5D<Real> w0_ = w0;
   DvceArray5D<Real> umhd0_;

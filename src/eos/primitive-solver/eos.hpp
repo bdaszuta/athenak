@@ -170,6 +170,29 @@ class EOS : public EOSPolicy, public ErrorPolicy {
            eos_units.TemperatureConversion(code_units);
   }
 
+  //! \fn Real GetTemperatureFromEntropy(Real n, Real s, Real *Y)
+  //  \brief Invert entropy per baryon to temperature.
+  //
+  //  \param[in] n  The number density in EOS units, e.g. rho/GetBaryonMass().
+  //  \param[in] s  Entropy per baryon in code units, as from GetEntropyPerBaryon;
+  //                not the entropy per mass returned by GetEntropy.
+  //  \param[in] Y  An array of size n_species of dimensionless particle fractions.
+  //  \return Temperature in code units, or NaN if entropy is unsupported.
+  //
+  //  No ErrorPolicy limits are applied here. For CompOSE, the entropy must admit a
+  //  nondegenerate bracket at (n, Y[0]); an unbracketed value diagnoses/asserts rather
+  //  than clamping to a temperature endpoint. See EOSCompOSE::TemperatureFromEntropy.
+  KOKKOS_INLINE_FUNCTION Real GetTemperatureFromEntropy(Real n, Real s,
+                                                        Real *Y) const {
+    if constexpr (supports_entropy) {
+      return EOSPolicy::TemperatureFromEntropy(
+                 n, s*code_units.EntropyConversion(eos_units), Y) *
+             eos_units.TemperatureConversion(code_units);
+    } else {
+      return std::numeric_limits<Real>::quiet_NaN();
+    }
+  }
+
   //! \fn Real GetEnergy(Real n, Real T, Real *Y)
   //  \brief Get the energy density from the number density, temperature, and
   //         particle fractions.
@@ -211,6 +234,27 @@ class EOS : public EOSPolicy, public ErrorPolicy {
    } else {
     return std::numeric_limits<Real>::quiet_NaN();
    }
+  }
+
+  //! \fn Real GetEntropyPerBaryon(Real n, Real T, Real *Y)
+  //  \brief Get entropy per baryon, without GetEntropy's baryon-mass division.
+  //
+  //  \param[in] n  The number density in EOS units, e.g. rho/GetBaryonMass().
+  //  \param[in] T  The temperature in code units.
+  //  \param[in] Y  An array of size n_species of dimensionless particle fractions.
+  //  \return Entropy per baryon in code units, or NaN if entropy is unsupported.
+  //
+  //  CompOSE stores Q2 directly as entropy per baryon in k_B (ECENT). With nuclear
+  //  or geometric_solar code units (kb = 1), this returns S/(N_b k_B); with CGS code
+  //  units it returns erg/K per baryon. No density, temperature or species limits
+  //  are applied here; CompOSE retains its existing edge-cell extrapolation.
+  KOKKOS_INLINE_FUNCTION Real GetEntropyPerBaryon(Real n, Real T, Real *Y) const {
+    if constexpr (supports_entropy) {
+      return EOSPolicy::Entropy(n, T*code_units.TemperatureConversion(eos_units), Y) *
+             eos_units.EntropyConversion(code_units);
+    } else {
+      return std::numeric_limits<Real>::quiet_NaN();
+    }
   }
 
   //! \fn Real GetEnthalpy(Real n, Real T, Real *Y)

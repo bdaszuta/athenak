@@ -253,6 +253,90 @@ void PerformTests(Mesh *pmesh, ParameterInput *pin) {
 
   global_success = global_success && pert_success;
 
+  // Check entropy normalization against the stored Q2 row, not just a round trip:
+  // paired baryon-mass conversions in the two accessors could hide a per-mass error.
+  // Use local EOS copies so the active unit system and shared table remain unchanged.
+  auto eos_nuclear = eos;
+  eos_nuclear.SetCodeUnitSystem(Primitive::MakeNuclear());
+  auto eos_cgs = eos;
+  const auto cgs_units = Primitive::MakeCGS();
+  eos_cgs.SetCodeUnitSystem(cgs_units);
+  const Real T_to_cgs = eos.GetEOSUnitSystem().TemperatureConversion(cgs_units);
+  const Real kb_cgs = cgs_units.kb;
+  const auto raw_table = eos.GetRawTable();
+  const auto raw_ln = eos.GetRawLogNumberDensity();
+  const auto raw_Y = eos.GetRawYq();
+  const auto raw_lT = eos.GetRawLogTemperature();
+  const int raw_nn = raw_ln.extent_int(0);
+  const int raw_nY = raw_Y.extent_int(0);
+  const int raw_nT = raw_lT.extent_int(0);
+  const int entropy_row = Primitive::EOSCompOSE<LogPolicy>::ECENT;
+  int entropy_failures = 0;
+  int entropy_inversions = 0;
+
+  Kokkos::parallel_reduce("entropy_accessors",
+  Kokkos::RangePolicy<>(DevExeSpace(), 0, raw_nn*raw_nY),
+  KOKKOS_LAMBDA(const int &idx, int &nf, int &nt) {
+    const int in = idx/raw_nY;
+    const int iY = idx - in*raw_nY;
+    Real Y[MAX_SPECIES] = {0.0};
+    Y[0] = raw_Y(iY);
+    const Real n = logs.exp2_(raw_ln(in));  // EOS units, even for the CGS wrapper
+    const Real T = logs.exp2_(raw_lT(raw_nT/2));
+    const Real s_raw = raw_table(entropy_row, in, iY, raw_nT/2);
+    const Real s_nuclear = eos_nuclear.GetEntropyPerBaryon(n, T, Y);
+    const Real s_cgs = eos_cgs.GetEntropyPerBaryon(n, T*T_to_cgs, Y)/kb_cgs;
+    const Real s_scale = Kokkos::fmax(1.0, Kokkos::fabs(s_raw));
+    if (!(Kokkos::fabs(s_nuclear - s_raw) <= tol*s_scale) ||
+        !(Kokkos::fabs(s_cgs - s_raw) <= tol*s_scale)) {
+      Kokkos::printf("Entropy units disagree with Q2 at (%d, %d):\n"
+                     "  Q2 = %20.17g, nuclear = %20.17g, CGS/kb = %20.17g\n",
+                     in, iY, s_raw, s_nuclear, s_cgs);
+      nf += 1;
+    }
+
+    // Supply a strict endpoint bracket. This tests the existing inversion without
+    // assuming entropy is monotone or choosing a new out-of-range/plateau policy.
+    // Compare the recovered entropy, not a unique T on a potentially nonmonotone row.
+    const Real s_lo = eos_nuclear.GetEntropyPerBaryon(n, Tmin, Y);
+    const Real s_hi = eos_nuclear.GetEntropyPerBaryon(n, Tmax, Y);
+    const Real s_target = 0.5*(s_lo + s_hi);
+    if (!Kokkos::isfinite(s_lo) || !Kokkos::isfinite(s_hi)) {
+      nf += 1;
+      return;
+    }
+    if (!((s_lo < s_target && s_target < s_hi) ||
+          (s_hi < s_target && s_target < s_lo))) {
+      return;
+    }
+    nt += 1;
+    const Real T_nuclear = eos_nuclear.GetTemperatureFromEntropy(n, s_target, Y);
+    const Real T_cgs = eos_cgs.GetTemperatureFromEntropy(n, s_target*kb_cgs, Y);
+    // Reject invalid results before another lookup can turn log(T) into an index.
+    if (!(T_nuclear >= Tmin && T_nuclear <= Tmax) ||
+        !(T_cgs/T_to_cgs >= Tmin && T_cgs/T_to_cgs <= Tmax)) {
+      Kokkos::printf("Entropy inversion returned an invalid T at (%d, %d):\n"
+                     "  nuclear = %20.17g, CGS = %20.17g\n",
+                     in, iY, T_nuclear, T_cgs);
+      nf += 1;
+      return;
+    }
+    const Real s_test = eos_nuclear.GetEntropyPerBaryon(n, T_nuclear, Y);
+    const Real s_test_cgs = eos_cgs.GetEntropyPerBaryon(n, T_cgs, Y)/kb_cgs;
+    const Real target_scale = Kokkos::fmax(1.0, Kokkos::fabs(s_target));
+    if (!(Kokkos::fabs(s_test - s_target) <= tol*target_scale) ||
+        !(Kokkos::fabs(s_test_cgs - s_target) <= tol*target_scale)) {
+      Kokkos::printf("Entropy inversion failed at (%d, %d):\n"
+                     "  target = %20.17g, nuclear = %20.17g, CGS/kb = %20.17g\n",
+                     in, iY, s_target, s_test, s_test_cgs);
+      nf += 1;
+    }
+  }, Kokkos::Sum<int>(entropy_failures), Kokkos::Sum<int>(entropy_inversions));
+
+  std::cout << "Entropy accessors: " << entropy_failures << " failures, "
+            << entropy_inversions << " strict-bracket inversions.\n";
+  global_success = global_success && entropy_failures == 0 && entropy_inversions > 0;
+
   if (!global_success) {
     std::cout << "The test was not successful...\n";
     exit(EXIT_FAILURE);

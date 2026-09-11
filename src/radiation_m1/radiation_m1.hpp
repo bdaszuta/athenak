@@ -98,6 +98,14 @@ class RadiationM1 {
   RadiationM1TaskIDs id;          // container to hold names of TaskIDs
   Real dtnew{};
 
+  // Global lifecycle control is independent of coordinate excision. Disabling
+  // evolution materializes a ghost-inclusive mask and clears masked moments.
+  void SetEvolutionEnabled(bool enabled);
+  bool EvolutionEnabled() const {return evolution_enabled_;}
+  // One-way diagnostic evolution suppresses both configured feedback channels,
+  // not emission/absorption in the radiation equations or the radiation state.
+  void SetCouplingEnabled(bool enabled) {coupling_enabled_ = enabled;}
+
   // conditional quantities
   DvceArray5D<Real> w0;        // fluid quantities, when MHD is off, unused otherwise 
   // TODO: get rid of this:
@@ -138,6 +146,8 @@ class RadiationM1 {
   TaskStatus TimeUpdate_(Driver* d, int stage);
 
  private:
+  bool evolution_enabled_ = true;
+  bool coupling_enabled_ = true;
   MeshBlockPack* pmy_pack;  // ptr to MeshBlockPack
 };
 

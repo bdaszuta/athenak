@@ -593,8 +593,14 @@ void Driver::Execute(Mesh *pmesh, ParameterInput *pin, Outputs *pout, bool wdfla
 #if MPI_PARALLEL_ENABLED
       (void)MPI_Barrier(MPI_COMM_WORLD);
 #endif
-      // operator-split update (used by M1 radiation)
-      if (opsplit) {
+      // A CCSN transition completes its U exchanges/C2P in the preceding list.
+      // Stop only after that list, before the first newly activated M1 split.
+      const bool stop_before_m1 =
+          pin->GetOrAddBoolean("problem", "stop_before_m1", false);
+      const bool m1_enabled = pmesh->pmb_pack->pradm1 == nullptr ||
+          pmesh->pmb_pack->pradm1->EvolutionEnabled();
+      // Other configurations retain the existing operator-split behavior.
+      if (opsplit && m1_enabled && !stop_before_m1) {
         for (int stage=1; stage<=(nopsplit_stages); ++stage) {
           ExecuteTaskList(pmesh, "opsplit_before_stagen", stage);
           // std::cout << "opsplit_before_stagen" << std::endl;
@@ -615,7 +621,7 @@ void Driver::Execute(Mesh *pmesh, ParameterInput *pin, Outputs *pout, bool wdfla
 
       // Diffusion coefficients may depend on the post-RK state. Refresh the global
       // stability bound before choosing the second Strang-split half-sweep.
-      if (pmesh->sts_integrator != parabolic::STSIntegrator::none) {
+      if (!stop_before_m1 && pmesh->sts_integrator != parabolic::STSIntegrator::none) {
         pmesh->RefreshSTSParabolicTimeStep();
         BeginSTSSweep(pmesh, STSSweep::post);
         if (sts.enabled) {
@@ -645,6 +651,11 @@ void Driver::Execute(Mesh *pmesh, ParameterInput *pin, Outputs *pout, bool wdfla
         lb_efficiency_ += static_cast<float>(minnmb*(global_variable::nranks))/
             static_cast<float>(pmesh->nmb_total);
       }
+
+      // Count the completed hydro step with its physical timestamp, then let
+      // Finalize write the projected/recoupled state once, without another AMR
+      // redistribution or a misleading time-limit change.
+      if (stop_before_m1) break;
 
       // Test for/make outputs
       for (auto &out : pout->pout_list) {
@@ -707,7 +718,9 @@ void Driver::Finalize(Mesh *pmesh, ParameterInput *pin, Outputs *pout) {
     if (global_variable::my_rank == 0) {
       // Print diagnostic messages related to the end of the simulation
       OutputCycleDiagnostics(pmesh);
-      if (pmesh->ncycle == nlim) {
+      if (pin->GetOrAddBoolean("problem", "stop_before_m1", false)) {
+        std::cout << std::endl << "Terminating at bounce before the M1 split" << std::endl;
+      } else if (pmesh->ncycle == nlim) {
         std::cout << std::endl << "Terminating on cycle limit" << std::endl;
       } else if (pmesh->time >= tlim) {
         std::cout << std::endl << "Terminating on time limit" << std::endl;
