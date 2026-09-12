@@ -70,6 +70,9 @@ template <class T> struct HostStorage {
   int modifications = 0, syncs = 0;
   template <class Space> void modify() { ++modifications; }
   template <class Space> void sync() { ++syncs; }
+  // The HIP branch uses named ownership operations for aliased memory spaces.
+  void modify_host() { ++modifications; }
+  void sync_device() { ++syncs; }
 };
 struct RegionSize { Real x1min, x1max, x2min, x2max, x3min, x3max; };
 struct MeshBlock { HostStorage<RegionSize> mb_size; };
