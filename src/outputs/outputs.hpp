@@ -105,7 +105,8 @@ static const char *var_choice[NOUTPUT_CHOICES] = {
 
   // radiation M1 (154-165)
   "rad_m1_N", "rad_m1_E", "rad_m1_F", "rad_m1_chi", "rad_m1_eta_0", "rad_m1_abs_0",
-  "rad_m1_eta_1", "rad_m1_abs_1", "rad_m1_scat_1", "rad_m1_vel",
+  "rad_m1_eta_1", "rad_m1_abs_1", "rad_m1_scat_1",
+  "rad_m1_vel",  // Reserved, unsupported: rejected by output-variable validation.
   // Grouped M1 outputs (164-165). These write SEVERAL M1 fields into ONE file, to
   // cut the number of files per output event (file count, not volume, dominates
   // output cost on a contended parallel filesystem). The per-variable labels

@@ -133,6 +133,21 @@ RadiationM1::RadiationM1(MeshBlockPack *ppack, ParameterInput *pin)
     nurates_params.quad_nx = pin->GetOrAddInteger("bns_nurates", "nurates_quad_nx", 6);
     nurates_params.quad_nx_2 =
         pin->GetOrAddInteger("bns_nurates", "nurates_quad_nx_2", -1);
+    // The grey 1-D integrand stores both i and n+i in BS_N_MAX columns;
+    // the secondary rule uses the full point-array capacity. Validate before
+    // either quadrature is generated, including in Release builds.
+    if (nurates_params.quad_nx < 1 || nurates_params.quad_nx > BS_N_MAX / 2) {
+      std::cerr << "### FATAL ERROR: <bns_nurates>/nurates_quad_nx must be in [1, "
+                << BS_N_MAX / 2 << "]; got " << nurates_params.quad_nx << std::endl;
+      exit(EXIT_FAILURE);
+    }
+    if (nurates_params.quad_nx_2 != -1 &&
+        (nurates_params.quad_nx_2 < 1 || nurates_params.quad_nx_2 > BS_N_MAX)) {
+      std::cerr << "### FATAL ERROR: <bns_nurates>/nurates_quad_nx_2 must be -1 "
+                << "(reuse primary) or in [1, " << BS_N_MAX << "]; got "
+                << nurates_params.quad_nx_2 << std::endl;
+      exit(EXIT_FAILURE);
+    }
     nurates_params.opacity_corr_fac_max =
         pin->GetOrAddReal("bns_nurates", "opacity_corr_fac_max", 3.0);
     // in ComputeNuratesOpacities()

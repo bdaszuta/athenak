@@ -248,9 +248,12 @@ void CompactObjectTracker::EvolveTracker(MeshBlockPack *pmbp) {
 
 //----------------------------------------------------------------------------------------
 void CompactObjectTracker::WriteTracker() {
-  if (0 == global_variable::my_rank && 0 == pmesh->ncycle % out_every) {
-    ofile << pmesh->ncycle << " "
-          << pmesh->time << " "
+  // The position has advanced, but the driver has not yet advanced its clock.
+  const int completed_cycle = pmesh->ncycle + 1;
+  const Real completed_time = pmesh->time + pmesh->dt;
+  if (0 == global_variable::my_rank && 0 == completed_cycle % out_every) {
+    ofile << completed_cycle << " "
+          << completed_time << " "
           << pos[0] << " "
           << pos[1] << " "
           << pos[2] << " "

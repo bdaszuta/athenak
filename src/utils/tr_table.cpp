@@ -166,7 +166,21 @@ ReadResult Table::ReadTable(const std::string fname) {
   // Dump all the memory into the data.
   // FIXME(JMF): This doesn't handle single precision data correctly!
   char *memblock = reinterpret_cast<char*>(data);
-  file.read(memblock, mem_size*sizeof(double));
+  const auto byte_count = static_cast<std::streamsize>(mem_size*sizeof(double));
+  file.read(memblock, byte_count);
+  if (!file || file.gcount() != byte_count) {
+    delete[] data;
+    data = nullptr;
+    fields.clear();
+    initialized = false;
+    result.error = ReadResult::BAD_HEADER;
+    std::stringstream ss;
+    ss << "Incomplete binary payload in '" << fname << "': expected " << byte_count
+       << " bytes, read " << file.gcount() << ".\n";
+    result.message = ss.str();
+    file.close();
+    return result;
+  }
 
   // Now we need to check for endianness.
   if ((!metadata["endianness"].compare("little") && !IsLittleEndian()) ||
@@ -255,10 +269,10 @@ bool Table::SplitToken(const std::string& in, std::string& key, std::string& val
 }
 
 void Table::TrimWhiteSpace(std::string& str) {
-  while(str.front() == ' ' || str.front() == '\t') {
+  while (!str.empty() && (str.front() == ' ' || str.front() == '\t')) {
     str.erase(0,1);
   }
-  while(str.back() == ' ' || str.front() == '\t') {
+  while (!str.empty() && (str.back() == ' ' || str.back() == '\t')) {
     str.pop_back();
   }
 }

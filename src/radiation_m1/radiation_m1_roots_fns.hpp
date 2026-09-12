@@ -139,6 +139,10 @@ KOKKOS_INLINE_FUNCTION Real NewtonClosure(
     const Real H2 = comoving_moment_squared(g_dd, g_uu, u_u, H_d);
     const Real fval = J * J * xi * xi - H2;
 
+    // Accept an exact root before making it a bracket endpoint: the strict
+    // interior-step test would otherwise bisect away from the solution.
+    if (fval == 0.0) return xi;
+
     if (use_bracket) {
       x_lo = (fval < 0.0) ? xi : x_lo;
       x_hi = (fval >= 0.0) ? xi : x_hi;
@@ -187,6 +191,9 @@ KOKKOS_INLINE_FUNCTION Real NewtonClosure(
   }
 
   if (!converged) {
+    Kokkos::printf(
+        "Maximum number of iterations exceeded when computing the M1 "
+        "closure (Newton)\n");
     if (use_bracket) {
       // A bracket exists (checked up front) and has narrowed over the iterations;
       // the best estimate is its midpoint.  Do NOT snap to an endpoint here --

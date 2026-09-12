@@ -66,6 +66,14 @@ BaseTypeOutput::BaseTypeOutput(ParameterInput *pin, Mesh *pm, OutputParameters o
        << "' in input file is not a valid choice" << std::endl;
     std::exit(EXIT_FAILURE);
   }
+  if (out_params.variable.compare("rad_m1_vel") == 0 ||
+      (out_params.file_type == "pdf" && out_params.nbin2 > 1 &&
+       out_params.variable_2.compare("rad_m1_vel") == 0)) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
+       << "Variable 'rad_m1_vel' in output block '" << out_params.block_name
+       << "' is reserved and not implemented" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
 
   // check that appropriate physics is defined for requested output variable
   // TODO(@user): Index limits of variable choices below may change if more choices added

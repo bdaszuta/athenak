@@ -126,54 +126,57 @@ void ApplyBeamSourcesBlackHole(Mesh *pmesh) {
           case BoundaryFlag::vacuum:
             if (beam_source_1_y1_ <= x2 && x2 <= beam_source_1_y2_) {
               for (int i = 0; i < ng; ++i) {
-                // Calculate inverse 4-metric and sqrt(det(3-metric))
+                // Use the destination ghost's geometry, not the loop counter.
+                const int ig = is - i - 1;
+                // Calculate the 4-metric and sqrt(det(3-metric)).
                 Real garr_dd[16];
                 AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> g_dd{};
                 // Real garr_uu[16];
                 // adm::SpacetimeUpperMetric(
-                //     adm.alpha(m, k, j, i), adm.beta_u(m, 0, k, j, i),
-                //     adm.beta_u(m, 1, k, j, i), adm.beta_u(m, 2, k, j, i),
-                //     adm.g_dd(m, 0, 0, k, j, i), adm.g_dd(m, 0, 1, k, j, i),
-                //     adm.g_dd(m, 0, 2, k, j, i), adm.g_dd(m, 1, 1, k, j, i),
-                //     adm.g_dd(m, 1, 2, k, j, i), adm.g_dd(m, 2, 2, k, j, i), garr_uu);
+                //     adm.alpha(m, k, j, ig), adm.beta_u(m, 0, k, j, ig),
+                //     adm.beta_u(m, 1, k, j, ig), adm.beta_u(m, 2, k, j, ig),
+                //     adm.g_dd(m, 0, 0, k, j, ig), adm.g_dd(m, 0, 1, k, j, ig),
+                //     adm.g_dd(m, 0, 2, k, j, ig), adm.g_dd(m, 1, 1, k, j, ig),
+                //     adm.g_dd(m, 1, 2, k, j, ig), adm.g_dd(m, 2, 2, k, j, ig), garr_uu);
                 adm::SpacetimeMetric(
-                    adm.alpha(m, k, j, i), adm.beta_u(m, 0, k, j, i),
-                    adm.beta_u(m, 1, k, j, i), adm.beta_u(m, 2, k, j, i),
-                    adm.g_dd(m, 0, 0, k, j, i), adm.g_dd(m, 0, 1, k, j, i),
-                    adm.g_dd(m, 0, 2, k, j, i), adm.g_dd(m, 1, 1, k, j, i),
-                    adm.g_dd(m, 1, 2, k, j, i), adm.g_dd(m, 2, 2, k, j, i), garr_dd);
+                    adm.alpha(m, k, j, ig), adm.beta_u(m, 0, k, j, ig),
+                    adm.beta_u(m, 1, k, j, ig), adm.beta_u(m, 2, k, j, ig),
+                    adm.g_dd(m, 0, 0, k, j, ig), adm.g_dd(m, 0, 1, k, j, ig),
+                    adm.g_dd(m, 0, 2, k, j, ig), adm.g_dd(m, 1, 1, k, j, ig),
+                    adm.g_dd(m, 1, 2, k, j, ig), adm.g_dd(m, 2, 2, k, j, ig), garr_dd);
                 for (int a = 0; a < 4; ++a) {
                   for (int b = 0; b < 4; ++b) {
                     g_dd(a, b) = garr_dd[a + b * 4];
                   }
                 }
                 const Real gam = adm::SpatialDet(
-                    adm.g_dd(m, 0, 0, k, j, i), adm.g_dd(m, 0, 1, k, j, i),
-                    adm.g_dd(m, 0, 2, k, j, i), adm.g_dd(m, 1, 1, k, j, i),
-                    adm.g_dd(m, 1, 2, k, j, i), adm.g_dd(m, 2, 2, k, j, i));
+                    adm.g_dd(m, 0, 0, k, j, ig), adm.g_dd(m, 0, 1, k, j, ig),
+                    adm.g_dd(m, 0, 2, k, j, ig), adm.g_dd(m, 1, 1, k, j, ig),
+                    adm.g_dd(m, 1, 2, k, j, ig), adm.g_dd(m, 2, 2, k, j, ig));
                 const Real volform = Kokkos::sqrt(gam);
 
-                // Solve for beam id
-                const Real g_xx = adm.g_dd(m, 0, 0, k, j, i);
+                // Solve g_xx*a^2 + 2*beta_x*a + beta2 = alpha^2*(1-rad_eps).
+                const Real g_xx = adm.g_dd(m, 0, 0, k, j, ig);
                 Real beta_x = 0;
                 Real beta2 = 0;
                 for (int idx = 0; idx < 3; idx++) {
-                  beta_x += adm.g_dd(m, 0, idx, k, j, i) * adm.beta_u(m, idx, k, j, i);
+                  beta_x += adm.g_dd(m, 0, idx, k, j, ig) * adm.beta_u(m, idx, k, j, ig);
                   for (int idx2 = 0; idx2 < 3; idx2++) {
-                    beta2 += adm.g_dd(m, idx, idx2, k, j, i) *
-                             adm.beta_u(m, idx, k, j, i) * adm.beta_u(m, idx2, k, j, i);
+                    beta2 += adm.g_dd(m, idx, idx2, k, j, ig) *
+                             adm.beta_u(m, idx, k, j, ig) * adm.beta_u(m, idx2, k, j, ig);
                   }
                 }
                 const Real a =
-                    (-beta_x + sqrt(beta_x * beta_x - beta2 +
-                                    adm.alpha(m, k, j, i) * adm.alpha(m, k, j, i) *
-                                        (1 - params_.rad_eps))) / g_xx;
+                    (-beta_x + sqrt(beta_x * beta_x - g_xx *
+                                    (beta2 - adm.alpha(m, k, j, ig) *
+                                     adm.alpha(m, k, j, ig) *
+                                        (1 - params_.rad_eps)))) / g_xx;
 
                 Real E = volform * 1.;
-                Real Fx = a * E / adm.alpha(m, k, j, i) +
-                          adm.beta_u(m, 0, k, j, i) * E / adm.alpha(m, k, j, i);
-                Real Fy = adm.beta_u(m, 1, k, j, i) * E / adm.alpha(m, k, j, i);
-                Real Fz = adm.beta_u(m, 2, k, j, i) * E / adm.alpha(m, k, j, i);
+                Real Fx = a * E / adm.alpha(m, k, j, ig) +
+                          adm.beta_u(m, 0, k, j, ig) * E / adm.alpha(m, k, j, ig);
+                Real Fy = adm.beta_u(m, 1, k, j, ig) * E / adm.alpha(m, k, j, ig);
+                Real Fz = adm.beta_u(m, 2, k, j, ig) * E / adm.alpha(m, k, j, ig);
                 AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> F_u{};
                 AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> F_d{};
                 F_u(0) = 0;
@@ -183,29 +186,30 @@ void ApplyBeamSourcesBlackHole(Mesh *pmesh) {
                 tensor_contract(g_dd, F_u, F_d);
                 // apply_floor(g_uu, E, F_d, params_);
                 for (int nuidx = 0; nuidx < nspecies_; nuidx++) {
-                  u0_(m, CombinedIdx(nuidx, M1_E_IDX, nvars_), k, j, is - i - 1) = E;
-                  u0_(m, CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, is - i - 1) = F_d(1);
-                  u0_(m, CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, is - i - 1) = F_d(2);
-                  u0_(m, CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, j, is - i - 1) = F_d(3);
+                  u0_(m, CombinedIdx(nuidx, M1_E_IDX, nvars_), k, j, ig) = E;
+                  u0_(m, CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, ig) = F_d(1);
+                  u0_(m, CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, ig) = F_d(2);
+                  u0_(m, CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, j, ig) = F_d(3);
                   if (nspecies_ > 1) {
-                    u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, is - i - 1) = 1.0;
+                    u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, ig) = 1.0;
                   }
                 }
               }
             }
             else {
               for (int i = 0; i < ng; ++i) {
+                const int ig = is - i - 1;
                 for (int nuidx = 0; nuidx < nspecies_; nuidx++) {
-                  u0_(m, CombinedIdx(nuidx, M1_E_IDX, nvars_), k, j, is - i - 1) =
+                  u0_(m, CombinedIdx(nuidx, M1_E_IDX, nvars_), k, j, ig) =
                       0.0;
-                  u0_(m, CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, is - i - 1) =
+                  u0_(m, CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, ig) =
                       0.0;
-                  u0_(m, CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, is - i - 1) =
+                  u0_(m, CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, ig) =
                       0.0;
-                  u0_(m, CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, j, is - i - 1) =
+                  u0_(m, CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, j, ig) =
                       0.0;
                   if (nspecies_ > 1) {
-                    u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, is - i - 1) =
+                    u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, ig) =
                         0.0;
                   }
                 }

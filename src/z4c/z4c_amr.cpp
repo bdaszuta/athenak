@@ -71,6 +71,9 @@ void Z4c_AMR::Refine(MeshBlockPack *pmy_pack) {
 // using exact minimum distance via AABB clamping, which correctly handles
 // all cases: tracker nearest to a face, edge, or corner of the block.
 void Z4c_AMR::RefineTracker(MeshBlockPack *pmbp) {
+  // No trackers means no contribution to existing refinement requests.
+  if (pmbp->pz4c->ptracker.empty()) {return;}
+
   Mesh *pmesh       = pmbp->pmesh;
   auto &refine_flag = pmesh->pmr->refine_flag;
   auto &size        = pmbp->pmb->mb_size;
@@ -244,17 +247,11 @@ void Z4c_AMR::RefineRadii(MeshBlockPack *pmbp) {
     Real &x3min = size.h_view(m).x3min;
     Real &x3max = size.h_view(m).x3max;
 
-    Real r2[8] = {
-      SQ(x1min) + SQ(x2min) + SQ(x3min),
-      SQ(x1max) + SQ(x2min) + SQ(x3min),
-      SQ(x1min) + SQ(x2max) + SQ(x3min),
-      SQ(x1max) + SQ(x2max) + SQ(x3min),
-      SQ(x1min) + SQ(x2min) + SQ(x3max),
-      SQ(x1max) + SQ(x2min) + SQ(x3max),
-      SQ(x1min) + SQ(x2max) + SQ(x3max),
-      SQ(x1max) + SQ(x2max) + SQ(x3max),
-    };
-    Real rmin2 = *std::min_element(&r2[0], &r2[8]);
+    // Clamp the origin to the box, including face and edge intersections.
+    Real cx = fmax(x1min, fmin(0.0, x1max));
+    Real cy = fmax(x2min, fmin(0.0, x2max));
+    Real cz = fmax(x3min, fmin(0.0, x3max));
+    Real rmin2 = SQ(cx) + SQ(cy) + SQ(cz);
 
     for (size_t ir = 0; ir < radius.size(); ++ir) {
       if (rmin2 < SQ(radius[ir])) {

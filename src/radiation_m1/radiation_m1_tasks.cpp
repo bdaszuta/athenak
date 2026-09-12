@@ -188,7 +188,7 @@ TaskStatus RadiationM1::SetMask(Driver *pdrive, int stage) {
           }
         }
       });
-  is_chi_updated = false;
+  // FloorAndCalcClosure recomputes closure; there is no cache to invalidate.
   return TaskStatus::complete;
 }
 

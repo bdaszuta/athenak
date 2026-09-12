@@ -251,11 +251,9 @@ TaskStatus RadiationM1::CalcOpacityNurates_(Driver *pdrive, int stage) {
           Real eta_0_loc[4]{}, eta_1_loc[4]{};
           Real abs_0_loc[4]{}, abs_1_loc[4]{};
           Real scat_0_loc[4]{}, scat_1_loc[4]{};
-          // non-thermal (inelastic scattering / NEPS) emissivity and absorption,
-          // both ENERGY (..._1_...) and NUMBER (..._0_...) channels; non-zero only
-          // when use_nonthermal_separated is set
-          // NUMBER has no emissivity counterpart: NEPS is subtracted out of abs_0
-          // and never re-enters, unlike ENERGY, where eta_1_non_th is added back.
+          // Separated NEPS energy emissivity and absorption. The adapter already
+          // excludes NEPS from both number coefficients; its number subtraction
+          // term stays zero. The non-separated path leaves all split terms zero.
           Real eta_1_non_th_loc[4]{}, abs_1_non_th_loc[4]{};
           Real abs_0_non_th_loc[4]{};
 
@@ -367,10 +365,9 @@ TaskStatus RadiationM1::CalcOpacityNurates_(Driver *pdrive, int stage) {
 
               scat_1_loc[nuidx] *= corr_fac;
 
-              // Asymmetry below is inherited, not chosen here: abs_1 gets its
-              // non-thermal part back, abs_0 does not. New is that the
-              // no-Kirchhoff path now takes the same split, so it also drops
-              // abs_0_non_th, on all species. Both are no-ops without NEPS.
+              // Correct the thermal parts only. In the separated formalism,
+              // abs_0 is already thermal-only and abs_0_non_th is zero; only
+              // the energy channel receives a non-thermal contribution.
               abs_0_th[nuidx] = Kokkos::fmax(
                   abs_0_loc[nuidx] - abs_0_non_th_loc[nuidx], 0.0)*corr_ae[nuidx];
               abs_1_th[nuidx] = Kokkos::fmax(
@@ -622,6 +619,11 @@ TaskStatus RadiationM1::CalcOpacityNurates_(Driver *pdrive, int stage) {
               }
             }
 
+            // Retain the thermal emitter before correcting the separate NEPS
+            // copy, so every publication path adds the corrected copy once.
+            const Real eta_1_th = Kokkos::fmax(
+                eta_1_loc[nuidx] - eta_1_non_th_loc[nuidx], 0.0);
+
             // Correction for the NEPS
             // emissivity when using the equilibrium distribution. The NEPS
             // in-scattering emissivity scales with the neutrino occupation
@@ -629,8 +631,8 @@ TaskStatus RadiationM1::CalcOpacityNurates_(Driver *pdrive, int stage) {
             // the decoupling region, over-estimating it. Scale the non-thermal
             // (NEPS) emissivity by the ratio of the ACTUAL M1 density to the
             // equilibrium density (a grey proxy for g_field/g_eq), using the number
-            // ratio to preserve the spectrum and apply the ratio to both
-            // the number (nudens_0) and energy (nudens_1) channels. Capped
+            // ratio to scale the energy emissivity; the separated number
+            // channel has no NEPS contribution. Capped
             // at 1 so it only removes the spurious excess, never amplifies; deep
             // in the optically-thick core the field ~ equilibrium so the factor
             // -> 1. This mimics the reconstructed-distribution result without
@@ -648,8 +650,9 @@ TaskStatus RadiationM1::CalcOpacityNurates_(Driver *pdrive, int stage) {
             // derives them from the corrected THERMAL opacity and the
             // equilibrium distribution, inheriting the non-LTE correction
             // through abs_*_th; NEPS emission is added back afterwards, kept
-            // out of thermalization. Without Kirchhoff, bns_nurates' own
-            // emissivities stand, scaled like the opacities they pair with.
+            // out of thermalization. Without Kirchhoff (or at zero thermal
+            // absorption), scale the library's thermal emitter like its opacity
+            // and add the occupation-corrected NEPS energy emitter once.
             if (nurates_params_.use_kirchhoff_law) {
               eta_0_(m, nuidx, k, j, i) =
                   (abs_0_th[nuidx] > 0)
@@ -658,10 +661,11 @@ TaskStatus RadiationM1::CalcOpacityNurates_(Driver *pdrive, int stage) {
               eta_1_(m, nuidx, k, j, i) =
                   (abs_1_th[nuidx] > 0)
                       ? abs_1_th[nuidx] * my_nudens_1 + eta_1_non_th_loc[nuidx]
-                      : eta_1_loc[nuidx];
+                      : corr_ae[nuidx] * eta_1_th + eta_1_non_th_loc[nuidx];
             } else {
               eta_0_(m, nuidx, k, j, i) = eta_0_loc[nuidx] * corr_ae[nuidx];
-              eta_1_(m, nuidx, k, j, i) = eta_1_loc[nuidx] * corr_ae[nuidx];
+              eta_1_(m, nuidx, k, j, i) =
+                  corr_ae[nuidx] * eta_1_th + eta_1_non_th_loc[nuidx];
             }
           }
         }

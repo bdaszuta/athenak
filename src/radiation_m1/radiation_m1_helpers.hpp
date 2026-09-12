@@ -324,6 +324,9 @@ Real comoving_moment_squared(
   for (int a = 1; a < 4; ++a) {
     beta_u(a) = -g_uu(0, a) / g_uu(0, 0);
     v_u(a) = u_u(a) / W + beta_u(a) / alpha;
+  }
+  // Lower only after every component is available for off-diagonal metrics.
+  for (int a = 1; a < 4; ++a) {
     for (int b = 1; b < 4; ++b) {
       v_d(a) += g_dd(a, b) * v_u(b);
     }
