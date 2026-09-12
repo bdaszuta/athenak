@@ -39,6 +39,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -725,6 +726,7 @@ Real ParameterInput::SetReal(std::string block, std::string name, Real value) {
 
   Lock();
   pb = FindOrAddBlock(block);
+  ss_value.precision(std::numeric_limits<Real>::max_digits10);
   ss_value << value;
   AddParameter(pb, name, ss_value.str(), "# Updated during run time", true);
   Unlock();
