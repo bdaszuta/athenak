@@ -1,4 +1,4 @@
-"""F-26: run the real ParameterInput/serial I/O code without an AthenaK build.
+"""Run the real ParameterInput/serial I/O code without an AthenaK build.
 
 Run: python tst/test_parameter_roundtrip_findings.py -v
 Only unrelated athena.hpp types and Kokkos::abort are replaced by a preinclude;
