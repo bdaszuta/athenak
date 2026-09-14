@@ -66,12 +66,26 @@ void calc_K_from_rT(const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &rT_dd
 
 //----------------------------------------------------------------------------------------
 //! \fn void radiationm1::calc_Pthin
-//  \brief Compute lab radiation pressure in the thin limit
+//  \brief Compute lab thin pressure with an isotropic zero-norm completion.
+//  E, F_d, and P_dd use the same densitization. At zero flux norm there is no
+//  beam direction: use E (g_ab + n_a n_b)/3 to retain spatial trace E. This is
+//  a lab-frame convention at the singular state, not a fluid-frame thick limit.
 KOKKOS_INLINE_FUNCTION
-void calc_Pthin(const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_uu,
+void calc_Pthin(const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_dd,
+                const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_uu,
+                const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &n_d,
                 const Real &E, const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &F_d,
                 AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &P_dd) {
   const Real F2 = tensor_dot(g_uu, F_d, F_d);
+  if (F2 == 0.0) {
+    const Real Eo3 = E / 3.0;
+    for (int a = 0; a < 4; ++a) {
+      for (int b = a; b < 4; ++b) {
+        P_dd(a, b) = Eo3 * (g_dd(a, b) + n_d(a) * n_d(b));
+      }
+    }
+    return;
+  }
   Real fac = (F2 > 0 ? E / F2 : 0);
   for (int a = 0; a < 4; ++a) {
     for (int b = a; b < 4; ++b) {
@@ -223,7 +237,7 @@ void apply_closure(const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_dd,
   AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> Pthin_dd{};
   AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> Pthick_dd{};
 
-  calc_Pthin(g_uu, E, F_d, Pthin_dd);
+  calc_Pthin(g_dd, g_uu, n_d, E, F_d, Pthin_dd);
   calc_Pthick(g_dd, g_uu, n_d, w_lorentz, v_d, E, F_d, Pthick_dd);
 
   const Real dthick = 3. * (1 - chi) / 2.;

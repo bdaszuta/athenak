@@ -106,7 +106,7 @@ KOKKOS_INLINE_FUNCTION Real NewtonClosure(
 
   AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> Pthin_dd{};
   AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> Pthick_dd{};
-  calc_Pthin(g_uu, E, F_d, Pthin_dd);
+  calc_Pthin(g_dd, g_uu, n_d, E, F_d, Pthin_dd);
   calc_Pthick(g_dd, g_uu, n_d, w_lorentz, v_d, E, F_d, Pthick_dd);
   AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> dP_dthin{};
   for (int a = 0; a < 4; ++a)
@@ -266,6 +266,14 @@ KOKKOS_INLINE_FUNCTION void source_jacobian(
   // drvts of Hi
   Real HdEv = W3 * (-1 - dthin * vdothatf2 + (dthick * (-3 + 2 * W2)) / (1 + 2 * W2));
   Real HdEf = -(dthin * vdothatf * W);
+
+  // Match calc_Pthin's isotropic zero-norm completion at fixed chi:
+  // delta J = dthin E (W^2 - 1)/3, delta H_i = -dthin E W^3 v_i/3.
+  // These are branch-local energy derivatives, not a smooth F -> 0 limit.
+  if (F2 == 0.0) {
+    JdE += dthin * (W2 - 1.0) / 3.0;
+    HdEv -= dthin * W3 / 3.0;
+  }
 
   Real HxdE = HdEv * vx + HdEf * hatfx;
   Real HydE = HdEv * vy + HdEf * hatfy;
