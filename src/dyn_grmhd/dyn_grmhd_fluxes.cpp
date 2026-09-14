@@ -251,9 +251,13 @@ TaskStatus DynGRMHDPS<EOSPolicy, ErrorPolicy>::CalcFluxes(Driver *pdriver, int s
     }
   }
 
-  // Call FOFC if necessary
+  // Select the correction solver independently of the main Riemann solver.
   if (pmy_pack->pmhd->use_fofc || pmy_pack->pcoord->coord_data.bh_excise) {
-    FOFC<rsolver_method_>(pdriver, stage);
+    if (fofc_method == DynGRMHD_RSolver::llf_dyngr) {
+      FOFC<DynGRMHD_RSolver::llf_dyngr>(pdriver, stage);
+    } else {
+      FOFC<DynGRMHD_RSolver::hlle_dyngr>(pdriver, stage);
+    }
   }
 
   return TaskStatus::complete;
