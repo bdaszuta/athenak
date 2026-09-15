@@ -21,7 +21,7 @@
 #include <Kokkos_Core.hpp>
 
 #include "../../athena.hpp"
-#include "../../bns_nurates_fdi_ns.hpp"
+#include "fermi_dirac_integrals.hpp"
 #include "ps_types.hpp"
 #include "eos_policy_interface.hpp"
 #include "unit_system.hpp"
@@ -55,7 +55,7 @@ class EOSCompOSE : public EOSPolicyInterface, public LogPolicy, public SupportsE
     NUEQ_CONSTRAINED = 1,  //! solution constrained to a table edge (KKT point)
     NUEQ_ENERGY_ONLY = 2,  //! energy equation alone, solved for T at frozen Y_e
     NUEQ_FAILED      = 3,  //! no solution; T_eq is a clamped endpoint or the guess
-    NUEQ_UNSUPPORTED = 4   //! split electron-pair weights without bns_nurates
+    NUEQ_UNSUPPORTED = 4   //! reserved compatibility value
   };
 
  protected:
@@ -239,23 +239,6 @@ class EOSCompOSE : public EOSPolicyInterface, public LogPolicy, public SupportsE
                                                      Real &T_eq, Real *Y_eq,
                                                      Real T_guess, Real *Y_guess,
                                                      int *status = nullptr) const {
-#if !ENABLE_NURATES
-    // Unequal weights within a pair need bns_nurates' Fermi-Dirac integrals, whose
-    // headers are on the include path only under ENABLE_NURATES. Report the request as
-    // unsupported; answering the equal-weight problem instead would be a different
-    // scheme under this function's name.
-    if (w[PEQ_W1_NUE] != w[PEQ_W1_ANUE] || w[PEQ_W0_NUE] != w[PEQ_W0_ANUE]) {
-      // T_eq and Y_eq are in-out: every other exit writes them, and the eos.hpp wrapper
-      // rescales T_eq unconditionally, so leaving them alone would hand the caller its
-      // own guess multiplied by a unit conversion.
-      T_eq = T_guess;
-      Y_eq[0] = Y_guess[0];
-      if (status != nullptr) {
-        *status = NUEQ_UNSUPPORTED;
-      }
-      return 1;
-    }
-#endif
     const int n_at = 16;
     Real vec_guess[n_at][2] = { 
       {1.00e0, 1.00e0},
@@ -841,57 +824,37 @@ class EOSCompOSE : public EOSPolicyInterface, public LogPolicy, public SupportsE
   //   F_3(eta) + F_3(-eta) = 7pi^4/60 + pi^2 eta^2/2 + eta^4/4
   //
   // which are Bernoulli polynomials, from the polylogarithm inversion formula, and are
-  // the exact terms the residuals carry. bns_nurates' FDI_p* reflect on these same
-  // polynomials, so one rational evaluation at negative argument supplies the whole of
-  // the remaining, decaying part.
+  // the exact terms the residuals carry. The core FermiDirac functions reflect on these
+  // same polynomials, so one rational evaluation at negative argument supplies the whole
+  // of the remaining, decaying part.
   //
   // eta2 and P3 are passed in because the residual has them already.
   //
-  // Without bns_nurates all three return 0.0, which is safe only because
-  // BetaEquilibriumPartial refuses unequal weights within a pair in that build: the
-  // half-difference multiplying them is then exactly zero. Keep those two guards
-  // together.
-
   /// F_2(eta) + F_2(-eta), even.
   KOKKOS_INLINE_FUNCTION Real fermi_sum_2(Real eta, Real eta2) const {
-#if ENABLE_NURATES
     const Real a = Kokkos::fabs(eta);
-    return 2.0*bns_nurates::FDI_p2(-a) + a*(pi2 + eta2)/3.0;
-#else
-    static_cast<void>(eta); static_cast<void>(eta2);
-    return 0.0;
-#endif
+    return 2.0*FermiDirac::F2(-a) + a*(pi2 + eta2)/3.0;
   }
 
   /// F_3(eta) - F_3(-eta), odd. P3 = F_3(eta) + F_3(-eta).
   KOKKOS_INLINE_FUNCTION Real fermi_diff_3(Real eta, Real P3) const {
-#if ENABLE_NURATES
-    const Real d = P3 - 2.0*bns_nurates::FDI_p3(-Kokkos::fabs(eta));
+    const Real d = P3 - 2.0*FermiDirac::F3(-Kokkos::fabs(eta));
     return (eta < 0.0) ? -d : d;
-#else
-    static_cast<void>(eta); static_cast<void>(P3);
-    return 0.0;
-#endif
   }
 
   /// F_1(eta) - F_1(-eta), odd. Equals (dS_2/deta)/2, by F_k' = k F_{k-1}.
   KOKKOS_INLINE_FUNCTION Real fermi_diff_1(Real eta, Real eta2) const {
-#if ENABLE_NURATES
     const Real d = nu_pi2_6 + 0.5*eta2 -
-                   2.0*bns_nurates::FDI_p1(-Kokkos::fabs(eta));
+                   2.0*FermiDirac::F1(-Kokkos::fabs(eta));
     return (eta < 0.0) ? -d : d;
-#else
-    static_cast<void>(eta); static_cast<void>(eta2);
-    return 0.0;
-#endif
   }
 
   // Each residual pairs a polynomial, which is the exact pair combination the closed
   // forms give, with the combination that is not polynomial, which carries the
   // half-difference of the pair's two weights:
   //
-  //   lepton:  wbar_0 (N_+ - N_-) + dw_0 (N_+ + N_-),  P_2 exact, S_2 from FDI_p2
-  //   energy:  wbar_1 (J_+ + J_-) + dw_1 (J_+ - J_-),  P_3 exact, D_3 from FDI_p3
+  //   lepton:  wbar_0 (N_+ - N_-) + dw_0 (N_+ + N_-),  P_2 exact, S_2 from F2
+  //   energy:  wbar_1 (J_+ + J_-) + dw_1 (J_+ - J_-),  P_3 exact, D_3 from F3
   //
   // Both terms are evaluated unconditionally. Equal weights make dw exactly zero and
   // the second term contributes nothing, so a branch on it would only trade three

@@ -6,6 +6,7 @@
 //! \file radiation_m1_tasks.cpp
 //  \brief functions that control M1 tasks stored in tasklists in MeshBlockPack
 
+#include <cstdlib>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -70,12 +71,19 @@ void RadiationM1::AssembleRadiationM1Tasks(
     id.M1_mattersrc = tl["opsplit_stagen"]->AddTask(&RadiationM1::CalcOpacityNurates,
                                                     this, id.M1_closure, "RadiationM1::CalcOpacityNurates");
 #endif
+  } else if (params.opacity_type == WeakRates) {
+    id.M1_mattersrc = tl["opsplit_stagen"]->AddTask(
+        &RadiationM1::CalcOpacityWeakRates, this, id.M1_closure,
+        "RadiationM1::CalcOpacityWeakRates");
   } else if (params.opacity_type == Photons) {
     id.M1_mattersrc = tl["opsplit_stagen"]->AddTask(&RadiationM1::CalcOpacityPhotons,
                                                     this, id.M1_closure, "RadiationM1::CalcOpacityPhotons");
-  } else {
+  } else if (params.opacity_type == Toy) {
     id.M1_mattersrc =
         tl["opsplit_stagen"]->AddTask(&RadiationM1::CalcOpacityToy, this, id.M1_closure, "RadiationM1::CalcOpacityToy");
+  } else {
+    std::cerr << "### FATAL ERROR: unhandled radiation-M1 opacity type" << std::endl;
+    std::abort();
   }
 
   id.M1_flux =

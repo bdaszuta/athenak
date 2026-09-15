@@ -20,6 +20,7 @@
 #include "radiation_m1/radiation_m1_photon_opacities.hpp"
 #include "radiation_m1/radiation_m1_roots_fns.hpp"
 #include "radiation_m1/radiation_m1_toy.hpp"
+#include "radiation_m1/radiation_m1_weakrates.hpp"
 #include "tasklist/task_list.hpp"
 
 #if ENABLE_NURATES
@@ -75,6 +76,7 @@ class RadiationM1 {
 
   RadiationM1Params params{};              // user parameters for grey M1
   PhotonOpacityParams photon_op_params{};  // params for photon opacities
+  WeakRatesParams weakrates_params{};      // params for the weakrates backend
 #if ENABLE_NURATES
   NuratesParams nurates_params{};  // params for nurates (reactions, quadratures, etc)
 #endif
@@ -116,6 +118,7 @@ class RadiationM1 {
   TaskStatus RecvFlux(Driver* d, int stage);
   TaskStatus TimeUpdate(Driver* d, int stage);
   TaskStatus CalcOpacityNurates(Driver* pdrive, int stage);
+  TaskStatus CalcOpacityWeakRates(Driver* pdrive, int stage);
   TaskStatus CalcOpacityPhotons(Driver* pdrive, int stage);
   TaskStatus CalcOpacityToy(Driver* pdrive, int stage);
   TaskStatus RestrictU(Driver* d, int stage);
@@ -132,6 +135,8 @@ class RadiationM1 {
   // eos related quantites (only when mhd is on)
   template <class EOSPolicy, class ErrorPolicy>
   TaskStatus CalcOpacityNurates_(Driver* pdrive, int stage);
+  template <class EOSPolicy, class ErrorPolicy>
+  TaskStatus CalcOpacityWeakRates_(Driver* pdrive, int stage);
   template <class EOSPolicy, class ErrorPolicy>
   TaskStatus CalcOpacityPhotons_(Driver* pdrive, int stage);
   template <class EOSPolicy, class ErrorPolicy, int M1_NGHOST>

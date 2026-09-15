@@ -9,6 +9,7 @@
 #include "radiation_m1/radiation_m1.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <string>
 
@@ -158,6 +159,39 @@ RadiationM1::RadiationM1(MeshBlockPack *ppack, ParameterInput *pin)
   std::string opacity_type = pin->GetOrAddString("radiation_m1", "opacity_type", "none");
   if (opacity_type == "toy") {
     params.opacity_type = Toy;
+  } else if (opacity_type == "weakrates") {
+    params.opacity_type = WeakRates;
+    weakrates_params.rho_min_cgs =
+        pin->GetOrAddReal("weakrates", "rho_min_cgs", 1.0e4);
+    weakrates_params.temp_min_mev =
+        pin->GetOrAddReal("weakrates", "temp_min_mev", 0.1);
+    weakrates_params.opacity_corr_fac_max =
+        pin->GetOrAddReal("weakrates", "opacity_corr_fac_max", 1.75);
+    weakrates_params.use_partial_equilibrium =
+        pin->GetOrAddBoolean("weakrates", "use_partial_equilibrium", true);
+    weakrates_params.peq_w_floor =
+        pin->GetOrAddReal("weakrates", "peq_w_floor", 1.0e-3);
+    weakrates_params.peq_dlnT_tol =
+        pin->GetOrAddReal("weakrates", "peq_dlnT_tol", 1.0e-4);
+    weakrates_params.peq_dYe_tol =
+        pin->GetOrAddReal("weakrates", "peq_dYe_tol", 1.0e-4);
+
+    if (!std::isfinite(weakrates_params.rho_min_cgs) ||
+        !std::isfinite(weakrates_params.temp_min_mev) ||
+        !std::isfinite(weakrates_params.opacity_corr_fac_max) ||
+        !std::isfinite(weakrates_params.peq_w_floor) ||
+        !std::isfinite(weakrates_params.peq_dlnT_tol) ||
+        !std::isfinite(weakrates_params.peq_dYe_tol) ||
+        weakrates_params.rho_min_cgs < 0.0 || weakrates_params.temp_min_mev < 0.0 ||
+        weakrates_params.opacity_corr_fac_max < 1.0 ||
+        weakrates_params.peq_w_floor < 0.0 || weakrates_params.peq_w_floor > 1.0 ||
+        weakrates_params.peq_dlnT_tol < 0.0 || weakrates_params.peq_dYe_tol < 0.0) {
+      std::cerr << "### FATAL ERROR: invalid value in <weakrates>; require "
+                << "rho_min_cgs >= 0, temp_min_mev >= 0, "
+                << "opacity_corr_fac_max >= 1, 0 <= peq_w_floor <= 1, and "
+                << "peq_dlnT_tol, peq_dYe_tol >= 0" << std::endl;
+      exit(EXIT_FAILURE);
+    }
   } else if (opacity_type == "bns-nurates") {
 #if ENABLE_NURATES
     params.opacity_type = BnsNurates;

@@ -21,6 +21,7 @@
 #include "coordinates/coordinates.hpp"
 #include "coordinates/cell_locations.hpp"
 #include "eos/eos.hpp"
+#include "eos/primitive-solver/fermi_dirac_integrals.hpp"
 #include "mhd/mhd.hpp"
 #include "dyn_grmhd/dyn_grmhd.hpp"
 
@@ -759,11 +760,10 @@ void PerformNuEqTests(Mesh *pmesh, ParameterInput *pin) {
     success = false;
   }
 
-#if ENABLE_NURATES
   // ------------------------------------------------------------------------------
   // E. the Fermi-Dirac integrals the split weights are built on
   // ------------------------------------------------------------------------------
-  // Pins bns_nurates' FDI_p1/p2/p3 to the mathematics rather than to functions.hpp,
+  // Pins the standalone F1/F2/F3 approximations to the mathematics,
   // in the two ways that matter to eos_compose.hpp: the closed-form values at eta = 0,
   // and the reflection identities. The reflections are the load-bearing ones -- the
   // decomposition in ps_types.hpp works only because FDI reflects on the *same*
@@ -795,12 +795,12 @@ void PerformNuEqTests(Mesh *pmesh, ParameterInput *pin) {
     const Real eta = eta_lo + i*deta;
     const Real e2 = eta*eta;
 
-    const Real f1p = bns_nurates::FDI_p1(eta);
-    const Real f1m = bns_nurates::FDI_p1(-eta);
-    const Real f2p = bns_nurates::FDI_p2(eta);
-    const Real f2m = bns_nurates::FDI_p2(-eta);
-    const Real f3p = bns_nurates::FDI_p3(eta);
-    const Real f3m = bns_nurates::FDI_p3(-eta);
+    const Real f1p = Primitive::FermiDirac::F1(eta);
+    const Real f1m = Primitive::FermiDirac::F1(-eta);
+    const Real f2p = Primitive::FermiDirac::F2(eta);
+    const Real f2m = Primitive::FermiDirac::F2(-eta);
+    const Real f3p = Primitive::FermiDirac::F3(eta);
+    const Real f3m = Primitive::FermiDirac::F3(-eta);
 
     // F_1(eta) + F_1(-eta) = pi^2/6 + eta^2/2
     // F_2(eta) - F_2(-eta) = eta (pi^2 + eta^2)/3
@@ -818,22 +818,24 @@ void PerformNuEqTests(Mesh *pmesh, ParameterInput *pin) {
     // F_k'(eta) = k F_{k-1}(eta), by a central difference wide enough that
     // cancellation does not dominate. The heavies' eta = 0 point is included.
     const Real h = 1.0e-4;
-    const Real c2 = Kokkos::fabs((bns_nurates::FDI_p2(eta + h) -
-                                  bns_nurates::FDI_p2(eta - h))/(2.0*h*2.0*f1p) - 1.0);
-    const Real c3 = Kokkos::fabs((bns_nurates::FDI_p3(eta + h) -
-                                  bns_nurates::FDI_p3(eta - h))/(2.0*h*3.0*f2p) - 1.0);
+    const Real c2 =
+        Kokkos::fabs((Primitive::FermiDirac::F2(eta + h) -
+                      Primitive::FermiDirac::F2(eta - h))/(2.0*h*2.0*f1p) - 1.0);
+    const Real c3 =
+        Kokkos::fabs((Primitive::FermiDirac::F3(eta + h) -
+                      Primitive::FermiDirac::F3(eta - h))/(2.0*h*3.0*f2p) - 1.0);
     ec = (c2 > ec) ? c2 : ec;
     ec = (c3 > ec) ? c3 : ec;
   }, Kokkos::Max<Real>(err_refl), Kokkos::Max<Real>(err_recur));
 
-  const Real err_f1_0 = std::abs(bns_nurates::FDI_p1(0.0)/f1_0 - 1.0);
-  const Real err_f2_0 = std::abs(bns_nurates::FDI_p2(0.0)/f2_0 - 1.0);
-  const Real err_f3_0 = std::abs(bns_nurates::FDI_p3(0.0)/f3_0 - 1.0);
+  const Real err_f1_0 = std::abs(Primitive::FermiDirac::F1(0.0)/f1_0 - 1.0);
+  const Real err_f2_0 = std::abs(Primitive::FermiDirac::F2(0.0)/f2_0 - 1.0);
+  const Real err_f3_0 = std::abs(Primitive::FermiDirac::F3(0.0)/f3_0 - 1.0);
 
   const Real tol_fdi = 1.0e-14;
   const Real tol_recur = 1.0e-8;   // limited by the central difference, not by FDI
 
-  std::cout << "bns_nurates Fermi-Dirac integrals, eta in [" << eta_lo << ", "
+  std::cout << "CompOSE Fermi-Dirac integrals, eta in [" << eta_lo << ", "
             << eta_hi << "]:\n"
             << "  |F_1(0)/(pi^2/12) - 1|      : " << err_f1_0 << "\n"
             << "  |F_2(0)/(3 zeta(3)/2) - 1|  : " << err_f2_0 << "\n"
@@ -842,12 +844,12 @@ void PerformNuEqTests(Mesh *pmesh, ParameterInput *pin) {
             << "  worst F_k' = k F_{k-1}      : " << err_recur << "\n";
 
   if (!(err_f1_0 < tol_fdi) || !(err_f2_0 < tol_fdi) || !(err_f3_0 < tol_fdi)) {
-    std::cout << "FDI_p1/p2/p3 do not reproduce their closed-form values at eta = 0 "
+    std::cout << "F1/F2/F3 do not reproduce their closed-form values at eta = 0 "
               << "(tolerance " << tol_fdi << ").\n";
     success = false;
   }
   if (!(err_refl < tol_fdi)) {
-    std::cout << "FDI_p1/p2/p3 do not reflect on the polynomials func_eq_weak carries, "
+    std::cout << "F1/F2/F3 do not reflect on the polynomials func_eq_weak carries, "
               << "so the split-weight decomposition would not leave the exact terms "
               << "exact (tolerance " << tol_fdi << ").\n";
     success = false;
@@ -931,8 +933,8 @@ void PerformNuEqTests(Mesh *pmesh, ParameterInput *pin) {
       const Real a = Kokkos::fabs(eta);
       const Real a2 = a*a;
       const Real P3 = p3_zero + 0.5*a2*(pi2_f + 0.5*a2);
-      const Real S2 = 2.0*bns_nurates::FDI_p2(-a) + a*(pi2_f + a2)/3.0;
-      const Real D3_abs = P3 - 2.0*bns_nurates::FDI_p3(-a);
+      const Real S2 = 2.0*Primitive::FermiDirac::F2(-a) + a*(pi2_f + a2)/3.0;
+      const Real D3_abs = P3 - 2.0*Primitive::FermiDirac::F3(-a);
       const Real D3 = (eta < 0.0) ? -D3_abs : D3_abs;
 
       Real n_nu[3], e_nu[3];
@@ -994,8 +996,6 @@ void PerformNuEqTests(Mesh *pmesh, ParameterInput *pin) {
       success = false;
     }
   }
-#endif  // ENABLE_NURATES
-
   if (n_w0_fail != 0 || !(res_w0_max < tol_res) || !(err_w0_T_max < tol_T) ||
       !(err_w0_Y_max < tol_Y)) {
     std::cout << "Zero weights do not return the matter state (tolerances " << tol_res
