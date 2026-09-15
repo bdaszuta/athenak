@@ -43,9 +43,12 @@ Real Evaluate(const int test) {
   params.closure_maxiter = (test == 5) ? 1 : 10;
   params.rad_E_floor = 1e-30;
   params.rad_eps = 1e-14;
-  // test=5 deliberately exhausts one iteration and must print a warning.
-  return radiationm1::NewtonClosure(gd, gu, nd, 1, u, vd, proj, 1, fd,
-                                    params, (test == 5) ? 1.0 / 4.0 : 1.0 / 2.0);
+  Real xi{};
+  const radiationm1::MathSignal ierr = radiationm1::NewtonClosure(
+      gd, gu, nd, 1, u, vd, proj, 1, fd, params,
+      (test == 5) ? 1.0 / 4.0 : 1.0 / 2.0, xi);
+  if (test == 5) return ierr == radiationm1::LinalgContinue ? 1.0 : 0.0;
+  return ierr == radiationm1::LinalgSuccess ? xi : -1.0;
 }
 
 // Dimensionless trace, spatiality, closure, and source-derivative errors.
@@ -190,30 +193,85 @@ Real ClosureError(const int test) {
   return error;
 }
 
+// Compare a deliberately exhausted Newton closure with the direct Brent result.
+KOKKOS_INLINE_FUNCTION
+Real NewtonFallbackError() {
+  Metric gd{}, gu{};
+  gd(0, 0) = gu(0, 0) = -1;
+  for (int a = 1; a < 4; ++a) gd(a, a) = gu(a, a) = 1;
+
+  Vector nd{}, vu{}, vd{}, u{}, ud{}, fd{};
+  nd(0) = -1;
+  vu(1) = 1.0 / 2.0;
+  const Real W = 1.0 / Kokkos::sqrt(1.0 - vu(1) * vu(1));
+  u(0) = W;
+  u(1) = W * vu(1);
+  tensor_contract(gd, u, ud);
+  tensor_contract(gd, vu, vd);
+  AthenaPointTensor<Real, TensorSymm::NONE, 4, 2> proj{};
+  radiationm1::calc_proj(ud, u, proj);
+
+  radiationm1::RadiationM1Params params{};
+  params.closure_newton_bracket = true;
+  params.closure_epsilon = kClosureTolerance;
+  params.closure_maxiter = 1;
+  params.rad_E_floor = 1e-30;
+  params.rad_eps = 1e-14;
+  radiationm1::BrentFunctor fn{};
+  Real chi_newton{}, chi_brent{};
+  Metric P_newton{}, P_brent{};
+  params.closure_solver = radiationm1::ClosureNewton;
+  radiationm1::calc_closure(fn, gd, gu, nd, W, u, vd, proj, 1, fd,
+                           chi_newton, P_newton, params, radiationm1::Minerbo);
+  params.closure_solver = radiationm1::ClosureBrent;
+  radiationm1::calc_closure(fn, gd, gu, nd, W, u, vd, proj, 1, fd,
+                           chi_brent, P_brent, params, radiationm1::Minerbo);
+
+  Real error = Kokkos::abs(chi_newton - chi_brent);
+  for (int a = 0; a < 4; ++a) {
+    for (int b = a; b < 4; ++b) {
+      error += Kokkos::abs(P_newton(a, b) - P_brent(a, b));
+    }
+  }
+  return error;
+}
+
 int main(int argc, char **argv) {
   Kokkos::initialize(argc, argv);
   int failed = 0;
   {
-    constexpr int ntest = 20;
+    constexpr int ntest = 21;
     const Real expected[ntest] = {1.0 / 3.0, 21.0 / 5.0, 24.0 / 5.0,
-                                  1.0 / 2.0, 1.0 / 2.0, 5.0 / 8.0};
+                                  1.0 / 2.0, 1.0 / 2.0, 1.0};
     const char *names[ntest] = {
         "norm-nondiagonal", "norm-high-W", "norm-low-W", "newton-exact-bracket",
-        "newton-exact-pure", "newton-exhausted", "zero-thin-static",
+        "newton-exact-pure", "newton-exhaustion-signal", "zero-thin-static",
         "zero-thin-moving-shifted", "zero-static-brent", "zero-static-newton",
         "zero-moving-brent", "zero-moving-newton", "zero-shifted-brent",
         "zero-shifted-newton", "floor-shifted-brent", "floor-shifted-newton",
         "nonzero-thin", "nonzero-blend", "zero-source-energy-column",
-        "nonzero-source-energy-column"};
+        "nonzero-source-energy-column", "newton-fallback-brent"};
     // Explicit host evaluation remains distinct from the device-kernel result.
     Real host[ntest];
     for (int n = 0; n < ntest; ++n) {
-      host[n] = n < 6 ? Evaluate(n) : ClosureError(n - 6);
+      if (n < 6) {
+        host[n] = Evaluate(n);
+      } else if (n < 20) {
+        host[n] = ClosureError(n - 6);
+      } else {
+        host[n] = NewtonFallbackError();
+      }
     }
     Kokkos::View<Real *> device("m1_findings", ntest);
     Kokkos::parallel_for("m1_findings", Kokkos::RangePolicy<>(0, ntest),
                         KOKKOS_LAMBDA(const int n) {
-                          device(n) = n < 6 ? Evaluate(n) : ClosureError(n - 6);
+                          if (n < 6) {
+                            device(n) = Evaluate(n);
+                          } else if (n < 20) {
+                            device(n) = ClosureError(n - 6);
+                          } else {
+                            device(n) = NewtonFallbackError();
+                          }
                         });
     const auto mirror = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), device);
     for (int n = 0; n < ntest; ++n) {

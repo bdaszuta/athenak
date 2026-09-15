@@ -47,7 +47,7 @@ enum RadiationM1SrcUpdate {
 //  \brief rootfinder used to determine the Minerbo closure
 enum RadiationM1ClosureSolver {
   ClosureBrent,   // safeguarded Brent-Dekker (default)
-  ClosureNewton,  // pure Newton-Raphson with analytic derivative + aberration guess
+  ClosureNewton,  // Newton-Raphson with analytic derivative, aberration guess, Brent fallback
 };
 
 //----------------------------------------------------------------------------------------

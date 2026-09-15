@@ -26,12 +26,16 @@ def main():
         exe = Path(tmp) / "m1_math_findings"
         subprocess.run(compile_flags + [str(source), "-o", str(exe)] + libraries,
                        cwd=entry["directory"], check=True)
-        run = subprocess.run([str(exe)], check=True, text=True, capture_output=True)
+        run = subprocess.run([str(exe)], text=True, capture_output=True)
         print(run.stdout, end="")
-        warning = "Maximum number of iterations exceeded when computing the M1 closure (Newton)"
-        if run.stdout.count(warning) != 2:
-            raise AssertionError("Expected one exhausted host and one kernel warning")
-        print("PASS exact roots, bounded exhaustion, and both nonconvergence warnings")
+        if run.returncode != 0:
+            raise AssertionError("M1 math regression executable failed")
+        warning = "Maximum number of iterations exceeded when computing the M1 closure"
+        fallback = "Newton M1 closure failed; falling back to Brent-Dekker."
+        debug_build = any(flag == "-DDEBUG_BUILD" for flag in compile_flags)
+        if not debug_build and (warning in run.stdout or fallback in run.stdout):
+            raise AssertionError("Release build printed a closure-solver diagnostic")
+        print("PASS exact roots, exhaustion signal, release silence, and Brent fallback")
 
 
 if __name__ == "__main__":

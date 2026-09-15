@@ -50,12 +50,18 @@ KOKKOS_INLINE_FUNCTION void calc_closure(
               ? Kokkos::fmin(1.0, Kokkos::sqrt(Kokkos::fmax(0.0,
                                      tensor_dot(g_uu, Hg_d, Hg_d))) / E)
               : 0.5;
-      const Real xi = NewtonClosure(g_dd, g_uu, n_d, w_lorentz, u_u, v_d, proj_ud, E,
-                                    F_d, m1_params, xi0);
-      chi = closure_fun(xi, closure_type);
-      apply_closure(g_dd, g_uu, n_d, w_lorentz, u_u, v_d, proj_ud, E, F_d, chi, P_dd,
-                    m1_params);
-      return;
+      Real xi{};
+      const MathSignal ierr = NewtonClosure(g_dd, g_uu, n_d, w_lorentz, u_u, v_d,
+                                            proj_ud, E, F_d, m1_params, xi0, xi);
+      if (ierr == LinalgSuccess) {
+        chi = closure_fun(xi, closure_type);
+        apply_closure(g_dd, g_uu, n_d, w_lorentz, u_u, v_d, proj_ud, E, F_d, chi,
+                      P_dd, m1_params);
+        return;
+      }
+#ifdef DEBUG_BUILD
+      Kokkos::printf("Newton M1 closure failed; falling back to Brent-Dekker.\n");
+#endif
     }
 
     Real x_lo = 0.0;
@@ -94,10 +100,12 @@ KOKKOS_INLINE_FUNCTION void calc_closure(
       ierr = BrentIterate(BrentFunc, x_lo, x_hi, root, state, g_dd, g_uu, n_d, w_lorentz,
                           u_u, v_d, proj_ud, E, F_d, m1_params, closure_type);
 
+#ifdef DEBUG_BUILD
       // Some nans in the evaluation. This should not happen.
       if (ierr != LinalgSuccess) {
         Kokkos::printf("Unexpected error in BrentIterate.\n");
       }
+#endif
       x_md = root;
       ierr = BrentTestInterval(x_lo, x_hi, m1_params.closure_epsilon, 0);
     } while (ierr == LinalgContinue && iter < m1_params.closure_maxiter);
@@ -105,11 +113,13 @@ KOKKOS_INLINE_FUNCTION void calc_closure(
     chi = closure_fun(x_md, closure_type);
     apply_closure(g_dd, g_uu, n_d, w_lorentz, u_u, v_d, proj_ud, E, F_d, chi, P_dd,
                     m1_params);
+#ifdef DEBUG_BUILD
     if (ierr != LinalgSuccess) {
       Kokkos::printf(
           "Maximum number of iterations exceeded when computing the M1 "
           "closure\n");
     }
+#endif
   }
 }
 

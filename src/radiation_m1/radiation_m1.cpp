@@ -91,8 +91,8 @@ RadiationM1::RadiationM1(MeshBlockPack *ppack, ParameterInput *pin)
     exit(EXIT_FAILURE);
   }
 
-  // set closure rootfinder (default: brent). "newton" = pure Newton-Raphson with
-  // analytic derivative and the relativistic-aberration initial guess.
+  // set closure rootfinder (default: brent). "newton" = Newton-Raphson with an
+  // analytic derivative, a relativistic-aberration guess, and Brent fallback.
   std::string closure_solver =
       pin->GetOrAddString("radiation_m1", "closure_solver", "brent");
   if (closure_solver == "brent") {
@@ -107,7 +107,7 @@ RadiationM1::RadiationM1(MeshBlockPack *ppack, ParameterInput *pin)
   // Safeguard the Newton closure with a [0,1] bracket (rtsafe).  Default true:
   // the Minerbo residual is bimodal in the optically-thick-but-advected regime,
   // where pure Newton can converge to the spurious streaming root.  Set false
-  // for pure Newton (faster, but only safe where the guess is in the right basin).
+  // for unsafeguarded Newton steps; a failed solve still falls back to Brent.
   params.closure_newton_bracket =
       pin->GetOrAddBoolean("radiation_m1", "closure_newton_bracket", true);
 

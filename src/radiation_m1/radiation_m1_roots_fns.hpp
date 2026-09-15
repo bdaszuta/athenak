@@ -57,7 +57,7 @@ KOKKOS_INLINE_FUNCTION Real dclosure_dxi(const Real xi) {
 }
 
 //----------------------------------------------------------------------------------------
-//! \fn Real radiationm1::NewtonClosure
+//! \fn MathSignal radiationm1::NewtonClosure
 //  \brief Pure Newton-Raphson rootfinder for the Minerbo closure.  Solves
 //  f(xi) = J(xi)^2 xi^2 - H(xi)^2 = 0 on xi in [0,1] using the analytic
 //  derivative df/dxi.  Seeded with the relativistic-aberration guess
@@ -75,13 +75,10 @@ KOKKOS_INLINE_FUNCTION Real dclosure_dxi(const Real xi) {
 //  closure_newton_bracket = false: pure Newton, clipped to [0,1] (faster, but
 //    only safe where the guess sits in the physical root's basin).
 //
-//  f(0) = -H(0)^2 <= 0 always.  In bracket mode, if f(1) < 0 there is no sign
-//  change in [0,1] -> fall back to the endpoint with the smaller |f|; if a
-//  bracket exists but Newton has not converged at maxiter, return the bracket
-//  midpoint (a bounded estimate, never an endpoint snap).  In pure mode a
-//  non-converged solve falls back to the nearer endpoint.
+//  f(0) = -H(0)^2 <= 0 always.  Failure to bracket or converge is reported to
+//  the caller so it can retry with the Brent-Dekker solver.
 //  Pthin/Pthick (and dP = Pthin - Pthick) are xi-independent and hoisted.
-KOKKOS_INLINE_FUNCTION Real NewtonClosure(
+KOKKOS_INLINE_FUNCTION MathSignal NewtonClosure(
     const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_dd,
     const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_uu,
     const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &n_d, const Real &w_lorentz,
@@ -89,19 +86,21 @@ KOKKOS_INLINE_FUNCTION Real NewtonClosure(
     const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &v_d,
     const AthenaPointTensor<Real, TensorSymm::NONE, 4, 2> &proj_ud, const Real &E,
     const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &F_d,
-    const RadiationM1Params &params, const Real xi0) {
+    const RadiationM1Params &params, const Real xi0, Real &xi) {
   BrentFunctor BrentFunc{};
   const bool use_bracket = params.closure_newton_bracket;
+  xi = Kokkos::fmin(1.0, Kokkos::fmax(0.0, xi0));
 
   // bracket check: need f(1) >= 0 (f(0) <= 0 always) for a sign change on [0,1].
   if (use_bracket) {
     const Real f_thin = BrentFunc(1.0, g_dd, g_uu, n_d, w_lorentz, u_u, v_d, proj_ud, E,
                                   F_d, params, Minerbo);
-    if (!(f_thin > 0.0)) {
-      const Real f_thick = BrentFunc(0.0, g_dd, g_uu, n_d, w_lorentz, u_u, v_d, proj_ud,
-                                     E, F_d, params, Minerbo);
-      return (Kokkos::abs(f_thin) < Kokkos::abs(f_thick)) ? 1.0 : 0.0;
+    if (!Kokkos::isfinite(f_thin)) return LinalgEbadfunc;
+    if (f_thin == 0.0) {
+      xi = 1.0;
+      return LinalgSuccess;
     }
+    if (f_thin < 0.0) return LinalgEinval;
   }
 
   AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> Pthin_dd{};
@@ -115,9 +114,7 @@ KOKKOS_INLINE_FUNCTION Real NewtonClosure(
 
   Real x_lo = 0.0;  // f(x_lo) <= 0 invariant (bracket mode)
   Real x_hi = 1.0;  // f(x_hi) >= 0 invariant (bracket mode)
-  Real xi = Kokkos::fmin(1.0, Kokkos::fmax(0.0, xi0));
   Real dx_prev = 1.0;  // magnitude of last step (rtsafe safety check)
-  bool converged = false;
   for (int iter = 0; iter < params.closure_maxiter; ++iter) {
     const Real chi = closure_fun(xi, Minerbo);
     const Real dthick = 1.5 * (1.0 - chi);
@@ -138,10 +135,11 @@ KOKKOS_INLINE_FUNCTION Real NewtonClosure(
 
     const Real H2 = comoving_moment_squared(g_dd, g_uu, u_u, H_d);
     const Real fval = J * J * xi * xi - H2;
+    if (!Kokkos::isfinite(fval)) return LinalgEbadfunc;
 
     // Accept an exact root before making it a bracket endpoint: the strict
     // interior-step test would otherwise bisect away from the solution.
-    if (fval == 0.0) return xi;
+    if (fval == 0.0) return LinalgSuccess;
 
     if (use_bracket) {
       x_lo = (fval < 0.0) ? xi : x_lo;
@@ -164,6 +162,7 @@ KOKKOS_INLINE_FUNCTION Real NewtonClosure(
     const Real H_dot_dH_dthin = tensor_dot(g_uu, H_d, dH_dthin_d);
     const Real dfval = 2.0 * J * J * xi +
                        (2.0 * J * dJ_dthin * xi * xi - 2.0 * H_dot_dH_dthin) * ddthin;
+    if (!Kokkos::isfinite(dfval)) return LinalgEbadfunc;
 
     const Real newton_xi = (Kokkos::abs(dfval) > 0.0) ? xi - fval / dfval : xi;
     Real xi_new;
@@ -177,6 +176,7 @@ KOKKOS_INLINE_FUNCTION Real NewtonClosure(
       xi_new = newton_ok ? newton_xi : bisect_xi;
     } else {
       xi_new = Kokkos::fmin(1.0, Kokkos::fmax(0.0, newton_xi));
+      if (xi_new == xi) return LinalgEnoprogj;
     }
     dx_prev = Kokkos::abs(xi_new - xi);
 
@@ -184,31 +184,11 @@ KOKKOS_INLINE_FUNCTION Real NewtonClosure(
         use_bracket && (Kokkos::abs(x_hi - x_lo) < params.closure_epsilon);
     if (dx_prev < params.closure_epsilon || bracket_conv) {
       xi = xi_new;
-      converged = true;
-      break;
+      return LinalgSuccess;
     }
     xi = xi_new;
   }
-
-  if (!converged) {
-    Kokkos::printf(
-        "Maximum number of iterations exceeded when computing the M1 "
-        "closure (Newton)\n");
-    if (use_bracket) {
-      // A bracket exists (checked up front) and has narrowed over the iterations;
-      // the best estimate is its midpoint.  Do NOT snap to an endpoint here --
-      // that would discard a good estimate and can pick the wrong limit.
-      xi = 0.5 * (x_lo + x_hi);
-    } else {
-      // pure Newton did not converge: fall back to the endpoint with smaller |f|.
-      const Real f_thick = BrentFunc(0.0, g_dd, g_uu, n_d, w_lorentz, u_u, v_d, proj_ud,
-                                     E, F_d, params, Minerbo);
-      const Real f_thin = BrentFunc(1.0, g_dd, g_uu, n_d, w_lorentz, u_u, v_d, proj_ud,
-                                    E, F_d, params, Minerbo);
-      xi = (Kokkos::abs(f_thin) < Kokkos::abs(f_thick)) ? 1.0 : 0.0;
-    }
-  }
-  return xi;
+  return LinalgContinue;
 }
 
 KOKKOS_INLINE_FUNCTION Real set_dthin(Real chi) { return 1.5 * chi - 0.5; }
