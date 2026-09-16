@@ -190,12 +190,23 @@ KOKKOS_INLINE_FUNCTION void MatterComplement(
 //! component, or produces a nonfinite active primitive. On success, prim and
 //! cons_out contain the recovered active primitives and unchanged conserved
 //! state.
+//!
+//! fail_code names the rejection that fired, so a failed projection reports its
+//! cause instead of only that it failed: 0 accepted, 2 conserved floor,
+//! 3 primitive floor, 4 conserved adjustment, 5 conserved value changed or
+//! nonfinite, 6 active primitive nonfinite, 7 magnetic field changed, and
+//! 20 + the Primitive::Error enumerator when C2P returned an error (21
+//! RHO_TOO_BIG, 22 RHO_TOO_SMALL, 23 NANS_IN_CONS, 24 MAG_TOO_BIG, 25
+//! BRACKETING_FAILED, 26 NO_SOLUTION, 27 CONS_FLOOR, 28 PRIM_FLOOR, 29
+//! CONS_ADJUSTED). The tests are applied in the same order as the
+//! pre-instrumentation combined condition, so the reported code is the first
+//! condition that was true.
 template <class EOSPolicy, class ErrorPolicy>
 KOKKOS_INLINE_FUNCTION bool RecoverMatter(
     const Primitive::PrimitiveSolver<EOSPolicy, ErrorPolicy> &ps,
     const Real cons_in[NCONS], const Real b_in[NMAG],
     const Real g3d[NSPMETRIC], const Real g3u[NSPMETRIC], Real prim[NPRIM],
-    Real cons_out[NCONS]) {
+    Real cons_out[NCONS], int *fail_code) {
   Real b[NMAG] = {b_in[IBX], b_in[IBY], b_in[IBZ]};
   Real metric[NSPMETRIC], inverse_metric[NSPMETRIC];
   Real original_cons[NCONS];
@@ -210,22 +221,192 @@ KOKKOS_INLINE_FUNCTION bool RecoverMatter(
 
   const Primitive::SolverResult result =
       ps.ConToPrim(prim, cons_out, b, metric, inverse_metric);
-  if (result.error != Primitive::Error::SUCCESS || result.cons_floor ||
-      result.prim_floor || result.cons_adjusted) {
+  if (result.error != Primitive::Error::SUCCESS) {
+    // Name the C2P failure itself: "could not solve" reads differently from
+    // "solved but repaired", and the two need different responses.
+    *fail_code = 20 + static_cast<int>(result.error);
+    return false;
+  }
+  if (result.cons_floor) {
+    *fail_code = 2;
+    return false;
+  }
+  if (result.prim_floor) {
+    *fail_code = 3;
+    return false;
+  }
+  if (result.cons_adjusted) {
+    *fail_code = 4;
     return false;
   }
   for (int n = 0; n < NCONS; ++n) {
     if (!Kokkos::isfinite(cons_out[n]) || cons_out[n] != original_cons[n]) {
+      *fail_code = 5;
       return false;
     }
   }
   const int nprim_active = PYF + ps.GetEOS().GetNSpecies();
   for (int n = 0; n < nprim_active; ++n) {
     if (!Kokkos::isfinite(prim[n])) {
+      *fail_code = 6;
       return false;
     }
   }
-  return b[IBX] == b_in[IBX] && b[IBY] == b_in[IBY] && b[IBZ] == b_in[IBZ];
+  if (b[IBX] != b_in[IBX] || b[IBY] != b_in[IBY] || b[IBZ] != b_in[IBZ]) {
+    *fail_code = 7;
+    return false;
+  }
+  *fail_code = 0;
+  return true;
+}
+
+//! Outcome of a failed projection trial, handed back to the caller.
+//!
+//! code is the rejection site (100-106); detail is the RecoverMatter code at the
+//! recovery sites (2-7, or 20 + the Primitive::Error enumerator when C2P
+//! returned an error) and 0 elsewhere; iteration is the index of the failing
+//! trial; residual is the most recent relaxed residual, the exact-pass residual
+//! at 105, and -1 when no residual has been evaluated yet.
+//!
+//! matter_rho, matter_T and matter_Ye describe the matter state the failing test
+//! was applied to. That is not always the state the caller entered with: every
+//! accepted recovery replaces the iterate. trial is the undensitized complemented
+//! matter state handed to C2P and is defined only at sites 101 and 103. c2p_rho,
+//! c2p_T and c2p_Ye are what C2P left behind when it returned a floored or
+//! adjusted state rather than an error and are defined only for detail 2-5.
+//!
+//! The report exists so that the caller can print one self-contained line per
+//! failed cell. Device output from different threads and ranks is ordered
+//! arbitrarily, so a failure reported across several prints cannot be matched up
+//! with its own state afterwards; every site records here, and nothing in this
+//! file prints.
+struct ProjectionFailureReport {
+  int code;
+  int detail;
+  int iteration;
+  Real residual;
+  Real matter_rho;
+  Real matter_T;
+  Real matter_Ye;
+  Real trial[NCONS];
+  Real c2p_rho;
+  Real c2p_T;
+  Real c2p_Ye;
+};
+
+//! Record one rejected projection trial, without printing.
+//!
+//! Codes: 100 iteration target not computable, 101 relaxed-trial recovery
+//! rejected, 102 recovered-state target not computable, 103 exact-trial
+//! recovery rejected, 104 exact-pass target not computable, 105 exact-pass
+//! residual above tolerance, 106 iteration budget exhausted. detail carries the
+//! RecoverMatter code for 101 and 103 and is 0 otherwise. residual is the most
+//! recent relaxed residual, the exact-pass residual for 105, and -1 when no
+//! residual has been evaluated yet.
+//!
+//! trial_cons is the complemented matter state handed to C2P and c2p_prim the
+//! array C2P writes its state into; each is passed only where it is defined and
+//! is null elsewhere, so a trial that C2P rejected with an error never reads the
+//! output array C2P leaves undefined on that path. matter_rho, matter_temperature
+//! and matter_electron_fraction describe the matter state the failing test saw.
+//! fail_out may be null.
+KOKKOS_INLINE_FUNCTION
+void RecordProjectionFailure(ProjectionFailureReport *fail_out, int code,
+                             int detail, int iteration, Real matter_rho,
+                             Real matter_temperature,
+                             Real matter_electron_fraction, Real residual,
+                             const Real trial_cons[NCONS] = nullptr,
+                             const Real c2p_prim[NPRIM] = nullptr) {
+  if (fail_out == nullptr) {
+    return;
+  }
+  fail_out->code = code;
+  fail_out->detail = detail;
+  fail_out->iteration = iteration;
+  fail_out->residual = residual;
+  fail_out->matter_rho = matter_rho;
+  fail_out->matter_T = matter_temperature;
+  fail_out->matter_Ye = matter_electron_fraction;
+  if (trial_cons != nullptr) {
+    for (int n = 0; n < NCONS; ++n) {
+      fail_out->trial[n] = trial_cons[n];
+    }
+  }
+  if (c2p_prim != nullptr && detail >= 2 && detail <= 5) {
+    // C2P returned a state rather than an error. Its rho, T and Ye identify
+    // which floor or adjustment branch fired: a density at the atmosphere value
+    // means W = D/rho collapsed, and a density near the input with T at the
+    // temperature floor means the solve returned a sub-floor temperature.
+    fail_out->c2p_rho = c2p_prim[PRH];
+    fail_out->c2p_T = c2p_prim[PTM];
+    fail_out->c2p_Ye = c2p_prim[PYF];
+  }
+}
+
+//! Print one failed projection as a single self-contained line, and nothing else.
+//!
+//! One line per failed cell, because device output from different threads and
+//! ranks is ordered arbitrarily: a failure reported across several prints cannot
+//! be matched up with its own state afterwards, and a parallel log has no other
+//! way to associate the two. The line names the cell (MPI rank, global meshblock
+//! id, meshblock-local (k,j,i)) and the failure site, then the complete state the
+//! projection consumed and produced there:
+//!
+//!   prim    the matter primitives the caller entered with: rho, v^i, P, T, Ye
+//!   cons    the undensitized matter conserved state it entered with
+//!   met     the spatial metric g_ij, so g3u, detg and every contraction follow,
+//!   B_u     and the contravariant field B^i, the C2P magnetization input
+//!   m1      the undensitized four-species M1 state, (E,Fx,Fy,Fz,N) per species
+//!   fail    rho, T and Ye of the matter state the failing test was applied to
+//!   trial   D, tau, S^i and D Ye of the complemented state handed to C2P, valid
+//!           only when trial=1, i.e. at sites 101 and 103
+//!   c2p     rho, T and Ye C2P returned, valid only when c2p=1, that is when C2P
+//!           returned a floored or adjusted state rather than an error
+//!
+//! Everything is in the projection's own variables and units, so the failing call
+//! can be replayed offline without further conversion: rho is the baryon number
+//! density in 1/code-length^3, T is in MeV, and the matter and radiation
+//! conserved arrays are undensitized (divided by sqrt(detg)). The run-level
+//! conversions and floor parameters shared by every cell are printed once by the
+//! caller instead of on every line.
+KOKKOS_INLINE_FUNCTION
+void PrintProjectionFailureLine(int rank, int gid, int k, int j, int i,
+                                const ProjectionFailureReport &fail,
+                                const Real prim[NPRIM], const Real cons[NCONS],
+                                const Real b[NMAG], const Real g3d[NSPMETRIC],
+                                const Real rad[projection_nspecies]
+                                            [projection_nvars]) {
+  const int has_trial = (fail.code == 101 || fail.code == 103) ? 1 : 0;
+  const int has_c2p = (fail.detail >= 2 && fail.detail <= 5) ? 1 : 0;
+  Kokkos::printf(
+      "CCSN M1 projection FAIL rank=%d gid=%d cell=(%d,%d,%d) site=%d"
+      " detail=%d iter=%d diff=% .9e"
+      " | prim rho=% .17e vx=% .9e vy=% .9e vz=% .9e P=% .9e T=% .17e"
+      " Ye=% .17e"
+      " | cons D=% .17e tau=% .17e Sx=% .9e Sy=% .9e Sz=% .9e DYe=% .17e"
+      " | met=% .9e % .9e % .9e % .9e % .9e % .9e"
+      " | B_u=% .9e % .9e % .9e"
+      " | m1 nue E=% .9e Fx=% .9e Fy=% .9e Fz=% .9e N=% .9e"
+      " anue E=% .9e Fx=% .9e Fy=% .9e Fz=% .9e N=% .9e"
+      " nux E=% .9e Fx=% .9e Fy=% .9e Fz=% .9e N=% .9e"
+      " anux E=% .9e Fx=% .9e Fy=% .9e Fz=% .9e N=% .9e"
+      " | fail rho=% .9e T=% .9e Ye=% .9e"
+      " | trial=%d D=% .9e tau=% .9e Sx=% .9e Sy=% .9e Sz=% .9e DYe=% .9e"
+      " | c2p=%d rho=% .9e T=% .9e Ye=% .9e\n",
+      rank, gid, k, j, i, fail.code, fail.detail, fail.iteration,
+      fail.residual, prim[PRH], prim[PVX], prim[PVY], prim[PVZ], prim[PPR],
+      prim[PTM], prim[PYF], cons[CDN], cons[CTA], cons[CSX], cons[CSY],
+      cons[CSZ], cons[CYD], g3d[S11], g3d[S12], g3d[S13], g3d[S22], g3d[S23],
+      g3d[S33], b[IBX], b[IBY], b[IBZ], rad[0][M1_E_IDX], rad[0][M1_FX_IDX],
+      rad[0][M1_FY_IDX], rad[0][M1_FZ_IDX], rad[0][M1_N_IDX], rad[1][M1_E_IDX],
+      rad[1][M1_FX_IDX], rad[1][M1_FY_IDX], rad[1][M1_FZ_IDX],
+      rad[1][M1_N_IDX], rad[2][M1_E_IDX], rad[2][M1_FX_IDX],
+      rad[2][M1_FY_IDX], rad[2][M1_FZ_IDX], rad[2][M1_N_IDX],
+      rad[3][M1_E_IDX], rad[3][M1_FX_IDX], rad[3][M1_FY_IDX],
+      rad[3][M1_FZ_IDX], rad[3][M1_N_IDX], fail.matter_rho, fail.matter_T,
+      fail.matter_Ye, has_trial, fail.trial[CDN], fail.trial[CTA],
+      fail.trial[CSX], fail.trial[CSY], fail.trial[CSZ], fail.trial[CYD],
+      has_c2p, fail.c2p_rho, fail.c2p_T, fail.c2p_Ye);
 }
 
 //! Solve one cell's conservative matter-radiation equilibrium projection.
@@ -237,6 +418,10 @@ KOKKOS_INLINE_FUNCTION bool RecoverMatter(
 //! the final radiation still matches equilibrium for the final matter. All
 //! work is stack-local; output arrays are populated only on success. The caller
 //! is responsible for committing them to the live MHD and M1 arrays.
+//!
+//! fail_out receives code 0 on success and otherwise names the last rejected
+//! trial as recorded by RecordProjectionFailure, whose remaining fields stay
+//! undefined unless a site recorded a failure; it may be null.
 template <class EOSPolicy, class ErrorPolicy>
 KOKKOS_INLINE_FUNCTION bool ProjectM1Cell(
     const Primitive::PrimitiveSolver<EOSPolicy, ErrorPolicy> &ps,
@@ -250,10 +435,18 @@ KOKKOS_INLINE_FUNCTION bool ProjectM1Cell(
     const Real old_rad[projection_nspecies][projection_nvars], Real tolerance,
     int max_iterations, Real relaxation, Real energy_floor, Real number_floor,
     Real final_prim[NPRIM], Real final_cons[NCONS],
-    Real final_rad[projection_nspecies][projection_nvars]) {
+    Real final_rad[projection_nspecies][projection_nvars],
+    ProjectionFailureReport *fail_out) {
   const int nprim_active = PYF + ps.GetEOS().GetNSpecies();
   Real prim[NPRIM];
   Real rad[projection_nspecies][projection_nvars];
+  int recover_code = 0;
+  Real last_diff = -1.0;
+  if (fail_out != nullptr) {
+    fail_out->code = 0;
+    fail_out->detail = 0;
+    fail_out->iteration = -1;
+  }
   for (int n = 0; n < nprim_active; ++n) {
     prim[n] = initial_prim[n];
   }
@@ -267,6 +460,8 @@ KOKKOS_INLINE_FUNCTION bool ProjectM1Cell(
     Real target[projection_nspecies][projection_nvars];
     if (!EquilibriumM1Target(ps, opacity_type, code_units, eos_units,
                              ngs_units, prim, g3d, target)) {
+      RecordProjectionFailure(fail_out, 100, 0, iteration, prim[PRH], prim[PTM],
+                              prim[PYF], last_diff);
       return false;
     }
 
@@ -282,7 +477,12 @@ KOKKOS_INLINE_FUNCTION bool ProjectM1Cell(
                      trial_cons);
     Real recovered_cons[NCONS], recovered_prim[NPRIM];
     if (!RecoverMatter(ps, trial_cons, b, g3d, g3u, recovered_prim,
-                       recovered_cons)) {
+                       recovered_cons, &recover_code)) {
+      // The refused trial is the C2P input, and the primitives C2P left behind
+      // are read from recovered_prim only for a returned state, never an error.
+      RecordProjectionFailure(fail_out, 101, recover_code, iteration, prim[PRH],
+                              prim[PTM], prim[PYF], last_diff, trial_cons,
+                              recovered_prim);
       return false;
     }
 
@@ -290,23 +490,37 @@ KOKKOS_INLINE_FUNCTION bool ProjectM1Cell(
     if (!EquilibriumM1Target(ps, opacity_type, code_units, eos_units,
                              ngs_units, recovered_prim, g3d,
                              recovered_target)) {
+      RecordProjectionFailure(fail_out, 102, 0, iteration, prim[PRH], prim[PTM],
+                              prim[PYF], last_diff);
       return false;
     }
 
-    if (ProjectionDifference(trial_rad, recovered_target, energy_floor,
-                             number_floor) <= tolerance) {
+    last_diff = ProjectionDifference(trial_rad, recovered_target, energy_floor,
+                                     number_floor);
+    if (last_diff <= tolerance) {
       Real exact_cons[NCONS], exact_prim[NPRIM];
       MatterComplement(old_cons, old_rad, recovered_target,
                        ps.GetEOS().GetBaryonMass(), exact_cons);
-      if (!RecoverMatter(ps, exact_cons, b, g3d, g3u, exact_prim, final_cons)) {
+      if (!RecoverMatter(ps, exact_cons, b, g3d, g3u, exact_prim, final_cons,
+                         &recover_code)) {
+        RecordProjectionFailure(fail_out, 103, recover_code, iteration,
+                                prim[PRH], prim[PTM], prim[PYF], last_diff,
+                                exact_cons, exact_prim);
         return false;
       }
       Real exact_target[projection_nspecies][projection_nvars];
-      if (!EquilibriumM1Target(ps, opacity_type, code_units, eos_units,
-                               ngs_units, exact_prim, g3d,
-                               exact_target) ||
-          ProjectionDifference(recovered_target, exact_target, energy_floor,
-                               number_floor) > tolerance) {
+      const bool exact_target_ok = EquilibriumM1Target(
+          ps, opacity_type, code_units, eos_units, ngs_units,
+          exact_prim, g3d, exact_target);
+      const Real exact_diff =
+          exact_target_ok
+              ? ProjectionDifference(recovered_target, exact_target, energy_floor,
+                                     number_floor)
+              : 0.0;
+      if (!exact_target_ok || exact_diff > tolerance) {
+        RecordProjectionFailure(fail_out, exact_target_ok ? 105 : 104, 0,
+                                iteration, prim[PRH], prim[PTM], prim[PYF],
+                                exact_diff);
         for (int n = 0; n < nprim_active; ++n) {
           prim[n] = exact_prim[n];
         }
@@ -338,6 +552,8 @@ KOKKOS_INLINE_FUNCTION bool ProjectM1Cell(
       }
     }
   }
+  RecordProjectionFailure(fail_out, 106, 0, max_iterations, prim[PRH], prim[PTM],
+                          prim[PYF], last_diff);
   return false;
 }
 

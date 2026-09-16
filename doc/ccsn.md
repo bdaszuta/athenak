@@ -98,6 +98,40 @@ The projection source names no backend. The projection uses unchanged donor
 tolerances and rejects failed or repaired C2P
 trial states; accepted cells preserve combined matter/radiation energy, momentum
 and electron lepton number by constructing the complementary material conserved state.
+Nothing is printed while the projection succeeds. A cell that cannot be projected
+reports one line per failed cell: device output from different threads and ranks is
+not ordered, so a failure split across several prints cannot be matched up with its
+own state afterwards. The line names the cell (MPI rank, global meshblock id and
+meshblock-local k, j, i), the failing site as `site`, `detail` and `iter`, and the
+state the projection consumed there: the matter primitives (`prim`: rho, v^i, P, T,
+Ye), the undensitized matter conserved state (`cons`), the spatial metric (`met`),
+the contravariant field (`B_u`), the undensitized four-species M1 state (`m1`:
+E, Fx, Fy, Fz and N per species, in nue, anue, nux, anux order) and the matter
+state the failing test was applied to (`fail`). A recovery site also carries the
+complemented matter state handed to C2P (`trial`, valid when `trial=1`, that is
+sites 101 and 103) and the primitives C2P returned (`c2p`, valid when `c2p=1`, that
+is when C2P returned a floored or adjusted state rather than an error). Every
+quantity is in the projection's own variables and units, so the failing call can be
+replayed offline without further conversion: rho is a baryon number density in
+1/code-length^3, T is in MeV, and the matter and radiation conserved arrays are
+undensitized. The metric site (107) has no undensitized state to report, so its line
+carries the cell, the metric and the matter primitives instead.
+
+`site` is the failing test: 100 iteration target not computable, 101 relaxed-trial
+recovery rejected, 102 recovered-state target not computable, 103 exact-trial
+recovery rejected, 104 exact-pass target not computable, 105 exact-pass residual
+above tolerance, 106 iteration budget exhausted, 107 spatial metric not invertible.
+`diff` is the most recent relaxed residual, the exact-pass residual at 105, and -1
+before any residual has been evaluated. Codes 101 and 103 carry the recovery
+sub-code as `detail` (2 conserved floor, 3 primitive floor, 4 conserved adjustment,
+5 conserved value changed or nonfinite, 6 active primitive nonfinite, 7 magnetic
+field changed, or 20 plus the Primitive::Error enumerator when C2P returned an
+error: 21 RHO_TOO_BIG, 22 RHO_TOO_SMALL, 23 NANS_IN_CONS, 24 MAG_TOO_BIG, 25
+BRACKETING_FAILED, 26 NO_SOLUTION, 27 CONS_FLOOR, 28 PRIM_FLOOR, 29
+CONS_ADJUSTED). The code-to-CGS conversions, the equilibrium gate, the projection
+controls, the M1 floors and the EOS error-policy floors that are identical for every
+cell are printed once as a context line, and the rank-local failure count is
+reported before the run stops.
 
 Evolving one-way M1 before bounce, followed by recoupling without replacing its
 moments:

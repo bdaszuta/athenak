@@ -1076,6 +1076,42 @@ static Real bdm_spb_max = 3.0;
 static Real bdm_r_max = 30.0;
 
 //----------------------------------------------------------------------------------------
+//! Print, once, the run-level constants a failed projection line is read against.
+//!
+//! Called only on the abort path, so a projection that succeeds still prints
+//! nothing. The per-cell lines are in the projection's own code units; the
+//! conversions and floors here are shared by every cell and are what turn those
+//! numbers into physical ones and separate a floor hit from a genuine solve
+//! failure. rho_cgs_per_code converts a code mass density to g/cc, so
+//! rho_cgs = rho_code * mb * rho_cgs_per_code, and n_cgs_per_code converts the
+//! reported baryon number density to 1/cc. E_floor and N_floor are the
+//! configured radiation floors; the projection scales each by 1/sqrt(detg) of
+//! its cell, and detg follows from that line's metric.
+template <class EOSPolicy>
+static void ProjectionAbortContext(
+    const EOSPolicy &eos, const Primitive::UnitSystem &code_units,
+    const Primitive::UnitSystem &cgs_units, const Real mb, Real energy_floor,
+    Real number_floor) {
+  Kokkos::printf(
+      "CCSN M1 projection context: mb=% .9e rho_cgs_per_code=% .9e"
+      " n_cgs_per_code=% .9e len_cgs_per_code=% .9e time_cgs_per_code=% .9e"
+      " E_cgs_per_code=% .9e eql_rho_min_cgs=% .9e eql_t_min_mev=% .9e"
+      " tol=% .9e relax=% .9e maxiter=%d E_floor=% .9e N_floor=% .9e"
+      " n_atm=% .9e T_atm=% .9e n_threshold=% .9e n_min=% .9e n_max=% .9e"
+      " T_min=% .9e T_max=% .9e h_min=% .9e v_max=% .9e\n",
+      mb, code_units.MassDensityConversion(cgs_units),
+      code_units.NumberDensityConversion(cgs_units),
+      code_units.LengthConversion(cgs_units),
+      code_units.TimeConversion(cgs_units),
+      code_units.EnergyDensityConversion(cgs_units), eql_rho_min_cgs,
+      eql_t_min_mev, projection_tolerance, projection_relaxation,
+      projection_maxiter, energy_floor, number_floor, eos.GetDensityFloor(),
+      eos.GetTemperatureFloor(), eos.GetThreshold(), eos.GetMinimumDensity(),
+      eos.GetMaximumDensity(), eos.GetMinimumTemperature(),
+      eos.GetMaximumTemperature(), eos.GetMinimumEnthalpy(),
+      eos.GetMaxVelocity());
+}
+
 //! \fn ConservativeM1ProjectionImpl
 //! \brief Replace the matter-only bounce state with a local conservative
 //!        matter+radiation equilibrium in cells above the EQL cutoff.
@@ -1127,6 +1163,11 @@ static bool ConservativeM1ProjectionImpl(MeshBlockPack *pmbp) {
   const int nmkji = nmb * nkji;
   const Real eql_t_min = eql_t_min_mev;
 
+  // Identity captured for the failure lines: the pack-local block index m is
+  // only unique within one rank and refinement level, so each line reports the
+  // rank and the global meshblock id gids + m as well.
+  const int rank = global_variable::my_rank;
+  const int gid_start = pmbp->gids;
   int failures = 0;
   Kokkos::parallel_reduce(
       "ccsn_conservative_m1_projection",
@@ -1169,8 +1210,19 @@ static bool ConservativeM1ProjectionImpl(MeshBlockPack *pmbp) {
         g3d[S33] = adm.g_dd(m, 2, 2, k, j, i);
         const Real detg = Primitive::GetDeterminant(g3d);
         if (!(detg > 0.0) || !Kokkos::isfinite(detg)) {
-          Kokkos::printf("CCSN M1 projection: invalid metric at (%d,%d,%d,%d)\n",
-                         m, k, j, i);
+          // The metric decides whether the projection's undensitized variables
+          // exist at all, so this site reports the metric instead of a state
+          // that cannot be derived from it.
+          Kokkos::printf(
+              "CCSN M1 projection FAIL rank=%d gid=%d cell=(%d,%d,%d) site=107"
+              " detail=0 iter=-1 diff=% .9e"
+              " | prim rho=% .17e vx=% .9e vy=% .9e vz=% .9e P=% .9e T=% .17e"
+              " Ye=% .17e"
+              " | met=% .9e % .9e % .9e % .9e % .9e % .9e detg=% .17e\n",
+              rank, gid_start + m, k, j, i, -1.0, initial_prim[PRH],
+              initial_prim[PVX], initial_prim[PVY], initial_prim[PVZ],
+              initial_prim[PPR], initial_prim[PTM], initial_prim[PYF], g3d[S11],
+              g3d[S12], g3d[S13], g3d[S22], g3d[S23], g3d[S33], detg);
           local_failures++;
           return;
         }
@@ -1206,15 +1258,16 @@ static bool ConservativeM1ProjectionImpl(MeshBlockPack *pmbp) {
 
         Real final_prim[NPRIM], final_cons[NCONS];
         Real final_rad[ccsn::projection_nspecies][ccsn::projection_nvars];
+        ccsn::ProjectionFailureReport fail = {0, 0, -1};
         const bool success = ccsn::ProjectM1Cell(
             ps_, opacity_type, code_units, eos_units, ngs_units,
             initial_prim, old_cons, b, g3d, g3u, old_rad,
             tolerance, max_iterations, relaxation, energy_floor * isdetg,
-            number_floor * isdetg, final_prim, final_cons, final_rad);
+            number_floor * isdetg, final_prim, final_cons, final_rad, &fail);
         if (!success) {
-          Kokkos::printf("CCSN M1 projection failed at (%d,%d,%d,%d): "
-                         "rho=% .17e T=% .17e Ye=% .17e\n",
-                         m, k, j, i, rho, initial_prim[PTM], initial_prim[PYF]);
+          ccsn::PrintProjectionFailureLine(rank, gid_start + m, k, j, i, fail,
+                                           initial_prim, old_cons, b, g3d,
+                                           old_rad);
           local_failures++;
           return;
         }
@@ -1247,6 +1300,8 @@ static bool ConservativeM1ProjectionImpl(MeshBlockPack *pmbp) {
       Kokkos::Sum<int>(failures));
 
   if (failures != 0) {
+    ProjectionAbortContext(eos_mut, code_units, cgs_units, mb, energy_floor,
+                           number_floor);
     std::cerr << "### FATAL: conservative M1 bounce projection failed in "
               << failures << " cell(s) on rank " << global_variable::my_rank
               << std::endl;
