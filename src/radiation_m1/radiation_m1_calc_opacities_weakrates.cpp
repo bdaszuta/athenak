@@ -272,12 +272,17 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
 
         const Real rho_eval_cgs =
             nb*conversions.number_cgs_per_eos*baryon_mass_cgs;
+        const Real xp = eos.GetProtonFraction(nb, temp, ye_arr);
+        const Real xn = eos.GetNeutronFraction(nb, temp, ye_arr);
+        const Real xh = eos.GetHeavyFraction(nb, temp, ye_arr);
+        const Real abar = eos.GetMassNumber(nb, temp, ye_arr);
+        const Real zbar = eos.GetChargeNumber(nb, temp, ye_arr);
         const Real mu_b = eos.GetBaryonChemicalPotential(nb, temp, ye_arr);
         const Real mu_q = eos.GetChargeChemicalPotential(nb, temp, ye_arr);
         const Real mu_le = eos.GetElectronLeptonChemicalPotential(nb, temp, ye_arr);
         const weakrates::State local_state = weakrates::MakeState(
-            rho_eval_cgs, temp, ye, baryon_mass_cgs, mu_b, mu_b + mu_q,
-            mu_le - mu_q);
+            rho_eval_cgs, temp, baryon_mass_cgs, xn, xp, xh, abar, zbar, mu_b,
+            mu_b + mu_q, mu_le - mu_q);
         weakrates::RawCoefficients raw =
             weakrates::ComputeRawCoefficients(local_state);
         weakrates::EquilibriumDensities local_eq =
@@ -470,18 +475,13 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
         Real neq_1_star[M1_TOTAL_NUM_SPECIES]{};
         if (point_finite) {
           Real ye_star_arr[3] = {ye_star, 0.0, 0.0};
-          const Real mu_b_star =
-              eos.GetBaryonChemicalPotential(nb, temp_star, ye_star_arr);
-          const Real mu_q_star = eos.GetChargeChemicalPotential(nb, temp_star, ye_star_arr);
           const Real mu_le_star =
               eos.GetElectronLeptonChemicalPotential(nb, temp_star, ye_star_arr);
-          const weakrates::State star_state = weakrates::MakeState(
-              rho_eval_cgs, temp_star, ye_star, baryon_mass_cgs, mu_b_star,
-              mu_b_star + mu_q_star, mu_le_star - mu_q_star);
+          const Real eta_nue_star = mu_le_star/temp_star;
           weakrates::EquilibriumDensities star_eq =
-              weakrates::ComputeEquilibriumDensities(star_state);
+              weakrates::ComputeEquilibriumDensities(temp_star, eta_nue_star);
           weakrates::ConvertToCodeUnits(conversions, star_eq);
-          bool star_finite = weakrates::IsFinite(star_state) &&
+          bool star_finite = Kokkos::isfinite(eta_nue_star) &&
                              weakrates::IsFinite(star_eq);
           neq_0_star[0] = star_eq.number[weakrates::kNuE];
           neq_0_star[1] = star_eq.number[weakrates::kAntiNuE];

@@ -344,6 +344,54 @@ class EOS : public EOSPolicy, public ErrorPolicy {
     }
   }
 
+    //! \fn Real GetHeavyFraction(Real n, Real T, Real *Y)
+  //  \brief Get the heavy-nucleus mass fraction X_h = A[N]*Y[N] from the number
+  //         density, temperature, and particle fractions.
+  //
+  //  \param[in] n  The number density
+  //  \param[in] T  The temperature
+  //  \param[in] Y  An array of size n_species of the particle fractions.
+  //  \return The heavy-nucleus mass fraction for the EOS.
+  KOKKOS_INLINE_FUNCTION Real GetHeavyFraction(Real n, Real T, Real *Y) const {
+   if constexpr (supports_potentials) {
+    return EOSPolicy::HeavyFraction(n, T*code_units.TemperatureConversion(eos_units), Y);
+    } else {
+    return std::numeric_limits<Real>::quiet_NaN();
+    }
+  }
+
+    //! \fn Real GetMassNumber(Real n, Real T, Real *Y)
+  //  \brief Get the heavy-nucleus mass number A[N] from the number density,
+  //         temperature, and particle fractions.
+  //
+  //  \param[in] n  The number density
+  //  \param[in] T  The temperature
+  //  \param[in] Y  An array of size n_species of the particle fractions.
+  //  \return The heavy-nucleus mass number for the EOS.
+  KOKKOS_INLINE_FUNCTION Real GetMassNumber(Real n, Real T, Real *Y) const {
+   if constexpr (supports_potentials) {
+    return EOSPolicy::MassNumber(n, T*code_units.TemperatureConversion(eos_units), Y);
+    } else {
+    return std::numeric_limits<Real>::quiet_NaN();
+    }
+  }
+
+    //! \fn Real GetChargeNumber(Real n, Real T, Real *Y)
+  //  \brief Get the heavy-nucleus charge number Z[N] from the number density,
+  //         temperature, and particle fractions.
+  //
+  //  \param[in] n  The number density
+  //  \param[in] T  The temperature
+  //  \param[in] Y  An array of size n_species of the particle fractions.
+  //  \return The heavy-nucleus charge number for the EOS.
+  KOKKOS_INLINE_FUNCTION Real GetChargeNumber(Real n, Real T, Real *Y) const {
+   if constexpr (supports_potentials) {
+    return EOSPolicy::ChargeNumber(n, T*code_units.TemperatureConversion(eos_units), Y);
+    } else {
+    return std::numeric_limits<Real>::quiet_NaN();
+    }
+  }
+
     //! \fn Real GetBetaEquilibriumTrapped(Real n, Real e, Real *Yl, Real &T_eq, Real *Y_eq, Real T_guess, Real *Y_guess) 
   // \brief Get the equilibrium temperature and species fractions from the energy and total lepton fractions
   //

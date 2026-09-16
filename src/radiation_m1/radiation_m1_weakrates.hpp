@@ -40,8 +40,12 @@ enum SpeciesIndex { kNuE = 0, kAntiNuE = 1, kNuX = 2, kNumRateSpecies = 3 };
 struct State {
   Real rho_cgs;
   Real temp_mev;
-  Real ye;
   Real baryon_mass_cgs;
+  Real xn;
+  Real xp;
+  Real xh;
+  Real abar;
+  Real zbar;
   Real eta_nue;
   Real eta_anue;
   Real eta_nux;
@@ -85,7 +89,10 @@ static_assert(std::is_trivially_copyable<UnitConversions>::value,
 KOKKOS_INLINE_FUNCTION
 bool IsFinite(const State &state) {
   return Kokkos::isfinite(state.rho_cgs) && Kokkos::isfinite(state.temp_mev) &&
-         Kokkos::isfinite(state.ye) && Kokkos::isfinite(state.baryon_mass_cgs) &&
+         Kokkos::isfinite(state.baryon_mass_cgs) && Kokkos::isfinite(state.xn) &&
+         Kokkos::isfinite(state.xp) &&
+         Kokkos::isfinite(state.xh) && Kokkos::isfinite(state.abar) &&
+         Kokkos::isfinite(state.zbar) &&
          Kokkos::isfinite(state.eta_nue) && Kokkos::isfinite(state.eta_anue) &&
          Kokkos::isfinite(state.eta_nux) && Kokkos::isfinite(state.eta_e) &&
          Kokkos::isfinite(state.eta_np) && Kokkos::isfinite(state.eta_pn);
@@ -115,24 +122,28 @@ bool IsFinite(const EquilibriumDensities &densities) {
   return finite;
 }
 
-//! Construct degeneracy parameters and nucleon blocking densities.
+//! Construct degeneracy parameters and nucleon blocking densities from tabulated
+//! free-nucleon and heavy-nucleus fractions.
 KOKKOS_INLINE_FUNCTION
-State MakeState(const Real rho_cgs, const Real temp_mev, const Real ye,
-                const Real baryon_mass_cgs, const Real mu_n, const Real mu_p,
+State MakeState(const Real rho_cgs, const Real temp_mev, const Real baryon_mass_cgs,
+                const Real xn, const Real xp, const Real xh, const Real abar,
+                const Real zbar, const Real mu_n, const Real mu_p,
                 const Real mu_e) {
   State state{};
   state.rho_cgs = rho_cgs;
   state.temp_mev = temp_mev;
-  state.ye = ye;
   state.baryon_mass_cgs = baryon_mass_cgs;
+  state.xn = xn;
+  state.xp = xp;
+  state.xh = xh;
+  state.abar = abar;
+  state.zbar = zbar;
   state.eta_nue = (mu_p + mu_e - mu_n)/temp_mev;
   state.eta_anue = -state.eta_nue;
   state.eta_nux = 0.0;
   state.eta_e = mu_e/temp_mev;
 
   const Real nb_cgs = rho_cgs/baryon_mass_cgs;
-  const Real xn = 1.0 - ye;
-  const Real xp = ye;
   const Real eta_n = mu_n/temp_mev;
   const Real eta_p = mu_p/temp_mev;
   const Real eta_hat = eta_n - eta_p - q_np_mev/temp_mev;
@@ -159,8 +170,8 @@ RawCoefficients ComputeRawCoefficients(const State &state) {
   const Real eta_anue = state.eta_anue;
   const Real eta_nux = state.eta_nux;
   const Real eta_e = state.eta_e;
-  const Real xn = 1.0 - state.ye;
-  const Real xp = state.ye;
+  const Real xn = state.xn;
+  const Real xp = state.xp;
 
   const Real hc_3 = Cube(hc_mevcm);
   const Real temp_4 = Fourth(temp);
@@ -252,13 +263,19 @@ RawCoefficients ComputeRawCoefficients(const State &state) {
   coeffs.abs_1[kNuE] = zeta_nue*temp_erg_sq*fermi::F5OverF3(eta_nue);
   coeffs.abs_1[kAntiNuE] = zeta_anue*temp_erg_sq*fermi::F5OverF3(eta_anue);
 
-  // Isoenergetic scattering on free nucleons. The opacity is per neutrino.
+  // Isoenergetic scattering on free nucleons plus coherent scattering on
+  // heavy nuclei (Shapiro-Teukolsky 1983). The opacity is per neutrino.
   const Real nb_cgs = rho/state.baryon_mass_cgs;
   const Real scatter_n = nb_cgs*(1.0 + 5.0*Square(alpha))/24.0*
                          sigma_0/Square(me_erg);
   const Real scatter_p = nb_cgs*(4.0*Square(cv - 1.0) + 5.0*Square(alpha))/24.0*
                          sigma_0/Square(me_erg);
-  const Real scatter_zeta = xn*scatter_n + xp*scatter_p;
+  const Real scatter_h =
+      (state.xh > 0.0 && state.abar > 0.0)
+          ? nb_cgs*0.0625*sigma_0/Square(me_erg)*state.abar*
+                Square(1.0 - state.zbar/state.abar)
+          : 0.0;
+  const Real scatter_zeta = xn*scatter_n + xp*scatter_p + state.xh*scatter_h;
   coeffs.scat_1[kNuE] = scatter_zeta*temp_erg_sq*fermi::F5OverF3(eta_nue);
   coeffs.scat_1[kAntiNuE] = scatter_zeta*temp_erg_sq*fermi::F5OverF3(eta_anue);
   coeffs.scat_1[kNuX] = scatter_zeta*temp_erg_sq*fermi::F5OverF3(eta_nux);

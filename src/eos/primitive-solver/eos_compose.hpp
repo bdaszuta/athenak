@@ -45,7 +45,10 @@ class EOSCompOSE : public EOSPolicyInterface, public LogPolicy, public SupportsE
     ECCS    = 6,  //! sound speed [c]
     ECYP    = 7,  //! proton fraction
     ECYN    = 8,  //! neutron fraction
-    ECNVARS = 9
+    ECXH    = 9,  //! heavy-nucleus mass fraction X_h = A[N]*Y[N]
+    ECAN    = 10, //! heavy-nucleus mass number A[N]
+    ECZN    = 11, //! heavy-nucleus charge number Z[N]
+    ECNVARS = 12
   };
 
   //! Where a BetaEquilibriumTrapped answer came from, reported through that
@@ -197,6 +200,29 @@ class EOSCompOSE : public EOSPolicyInterface, public LogPolicy, public SupportsE
     // fmax(0, NaN) = NaN, so a NaN from the table lookup would propagate.
     Real yn = eval_at_nty(ECYN, n, T, Y[0]);
     return (yn > 0.0) ? yn : 0.0;
+  }
+
+  /// Calculate the heavy-nucleus mass fraction X_h = A[N] * Y[N]
+  KOKKOS_INLINE_FUNCTION Real HeavyFraction(Real n, Real T, Real *Y) const {
+    assert (m_initialized);
+    // Use ternary instead of fmax: on IEEE-compliant hardware (Intel SYCL),
+    // fmax(0, NaN) = NaN, so a NaN from the table lookup would propagate.
+    Real xh = eval_at_nty(ECXH, n, T, Y[0]);
+    return (xh > 0.0) ? xh : 0.0;
+  }
+
+  /// Calculate the heavy-nucleus mass number A[N]
+  KOKKOS_INLINE_FUNCTION Real MassNumber(Real n, Real T, Real *Y) const {
+    assert (m_initialized);
+    Real an = eval_at_nty(ECAN, n, T, Y[0]);
+    return (an > 0.0) ? an : 0.0;
+  }
+
+  /// Calculate the heavy-nucleus charge number Z[N]
+  KOKKOS_INLINE_FUNCTION Real ChargeNumber(Real n, Real T, Real *Y) const {
+    assert (m_initialized);
+    Real zn = eval_at_nty(ECZN, n, T, Y[0]);
+    return (zn > 0.0) ? zn : 0.0;
   }
 
   /// Calculate hot (neutrino trapped) beta equilibrium T_eq and Y_eq given n, e, and Yl

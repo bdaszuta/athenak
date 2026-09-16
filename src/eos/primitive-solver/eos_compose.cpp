@@ -189,7 +189,7 @@ void EOSCompOSE<LogPolicy>::ReadTableFromFile(std::string fname) {
       // TableReader::operator[] returns a null pointer for a field that is absent. Fall
       // back on free npe matter, Y[p] = Yq and Y[n] = 1 - Yq, which keeps such a table
       // usable: exact where there are no nuclei, wrong where there are, so say so.
-      // Only the bns_nurates opacities read these two variables.
+      // The bns_nurates and weakrates opacities read these two variables.
       const bool has_yp = table.HasField("Y[p]");
       const bool has_yn = table.HasField("Y[n]");
       if (!has_yp || !has_yn) {
@@ -199,7 +199,7 @@ void EOSCompOSE<LogPolicy>::ReadTableFromFile(std::string fname) {
                   << ". Approximating the nucleon fractions as free npe matter,"
                   << " Y[p] = Yq and Y[n] = 1 - Yq. That is only exact where no nuclei"
                   << " are present: regenerate the table before using it with"
-                  << " bns_nurates.\n";
+                  << " bns_nurates or weakrates.\n";
       }
       Real * table_yp = has_yp ? table["Y[p]"] : nullptr;
       Real * table_yn = has_yn ? table["Y[n]"] : nullptr;
@@ -209,6 +209,57 @@ void EOSCompOSE<LogPolicy>::ReadTableFromFile(std::string fname) {
             size_t iflat = it + m_nt*(iy + m_ny*in);
             host_table(ECYP,in,iy,it) = has_yp ? table_yp[iflat] : host_yq(iy);
             host_table(ECYN,in,iy,it) = has_yn ? table_yn[iflat] : 1.0 - host_yq(iy);
+          }
+        }
+      }
+    }
+
+    { // Read heavy-nucleus fields -> Y[N], A[N], Z[N]
+      // X_h = A[N] * Y[N] is the heavy-nucleus MASS fraction consumed by the
+      // coherent neutrino-nucleus scattering term; A[N] and Z[N] are the mean
+      // mass and charge numbers. Tables written before these fields became
+      // mandatory do not carry them. Fall back on no heavy nuclei (X_h = 0),
+      // which makes the coherent scattering term vanish, with A = Z = 1 so the
+      // term stays well-defined. Only the bns_nurates and weakrates opacities
+      // read these variables.
+      const bool has_xh = table.HasField("Y[N]") && table.HasField("A[N]") &&
+                          table.HasField("Z[N]");
+      if (!has_xh) {
+        std::cout << "### WARNING in " << __FILE__ << std::endl
+                  << "The EOS table does not provide Y[N], A[N], and Z[N]. "
+                  << "Approximating the heavy-nucleus fraction as zero"
+                  << " (no coherent neutrino-nucleus scattering). Regenerate the"
+                  << " table before using it with bns_nurates or weakrates.\n";
+      }
+      Real * table_yn = has_xh ? table["Y[N]"] : nullptr;
+      Real * table_an = has_xh ? table["A[N]"] : nullptr;
+      Real * table_zn = has_xh ? table["Z[N]"] : nullptr;
+      for (size_t in=0; in<m_nn; ++in) {
+        for (size_t iy=0; iy<m_ny; ++iy) {
+          for (size_t it=0; it<m_nt; ++it) {
+            size_t iflat = it + m_nt*(iy + m_ny*in);
+            if (has_xh) {
+              const Real an = table_an[iflat];
+              const Real yn = table_yn[iflat];
+              // Interpolation on the NQT grid can undershoot A and overshoot
+              // Z near composition transitions; clamp to physical ranges so
+              // the coherent term's 1 - Z/A factor stays in [0,1] and the
+              // mass fraction X_h stays in [0,1].
+              const Real an_cl = (an > 0.0) ? an : 1.0;
+              Real zn = table_zn[iflat];
+              zn = (zn > 0.0) ? zn : 0.0;
+              zn = (zn > an_cl) ? an_cl : zn;
+              Real xh = an_cl*yn;
+              xh = (xh > 0.0) ? xh : 0.0;
+              xh = (xh < 1.0) ? xh : 1.0;
+              host_table(ECXH,in,iy,it) = xh;
+              host_table(ECAN,in,iy,it) = an_cl;
+              host_table(ECZN,in,iy,it) = zn;
+            } else {
+              host_table(ECXH,in,iy,it) = 0.0;
+              host_table(ECAN,in,iy,it) = 1.0;
+              host_table(ECZN,in,iy,it) = 1.0;
+            }
           }
         }
       }
