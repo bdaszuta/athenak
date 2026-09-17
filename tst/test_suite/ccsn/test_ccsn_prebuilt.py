@@ -404,9 +404,7 @@ def test_deferred_modes_rejected(ccsn, tmp_path, change, message):
 
 
 @pytest.mark.parametrize("key, value", (("projection_tolerance", "0"),
-                                        ("projection_maxiter", "0"),
-                                        ("projection_relaxation", "0"),
-                                        ("projection_relaxation", "1.1")))
+                                        ("projection_maxiter", "0")))
 def test_projection_controls_rejected(ccsn, tmp_path, key, value):
     deck = _deck(ccsn, "projection")
     deck["problem"][key] = value

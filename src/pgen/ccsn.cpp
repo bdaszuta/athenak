@@ -1064,9 +1064,11 @@ static bool bounce_detected = false;
 static bool recoupling_approach = false;
 static bool equilibriate_post_bounce = true;
 static bool conservative_bounce_projection = false;
-static Real projection_tolerance = 1.0e-8;
-static Real projection_relaxation = 0.5;
-static int projection_maxiter = 50;
+// Controls of the conservative bounce projection, filled from the deck in
+// UserProblem when the projection is selected. Every threshold the solver
+// applies is a member, so a failure line can be read against exactly the values
+// the solve used.
+static ccsn::ProjectionControls projection_controls;
 static bool stop_at_bounce = false;
 static Real eql_rho_min_cgs;
 static Real eql_t_min_mev;
@@ -1078,7 +1080,7 @@ static Real bdm_r_max = 30.0;
 //----------------------------------------------------------------------------------------
 //! Print, once, the run-level constants a failed projection line is read against.
 //!
-//! Called only on the abort path, so a projection that succeeds still prints
+//! Called on the failure path only, so a projection that succeeds still prints
 //! nothing. The per-cell lines are in the projection's own code units; the
 //! conversions and floors here are shared by every cell and are what turn those
 //! numbers into physical ones and separate a floor hit from a genuine solve
@@ -1086,17 +1088,21 @@ static Real bdm_r_max = 30.0;
 //! rho_cgs = rho_code * mb * rho_cgs_per_code, and n_cgs_per_code converts the
 //! reported baryon number density to 1/cc. E_floor and N_floor are the
 //! configured radiation floors; the projection scales each by 1/sqrt(detg) of
-//! its cell, and detg follows from that line's metric.
+//! its cell, and detg follows from that line's metric. Every projection control
+//! is printed too, because those are the thresholds the failing test was applied
+//! against and a reader of the line needs them to reproduce the decision.
 template <class EOSPolicy>
-static void ProjectionAbortContext(
+static void ProjectionFailureContext(
     const EOSPolicy &eos, const Primitive::UnitSystem &code_units,
-    const Primitive::UnitSystem &cgs_units, const Real mb, Real energy_floor,
-    Real number_floor) {
+    const Primitive::UnitSystem &cgs_units, const Real mb,
+    const ccsn::ProjectionControls &ctl, Real energy_floor, Real number_floor) {
   Kokkos::printf(
       "CCSN M1 projection context: mb=% .9e rho_cgs_per_code=% .9e"
       " n_cgs_per_code=% .9e len_cgs_per_code=% .9e time_cgs_per_code=% .9e"
       " E_cgs_per_code=% .9e eql_rho_min_cgs=% .9e eql_t_min_mev=% .9e"
-      " tol=% .9e relax=% .9e maxiter=%d E_floor=% .9e N_floor=% .9e"
+      " tol=% .9e maxiter=%d chain_tol=% .9e slack=% .9e mom_floor=% .9e"
+      " ls_maxiter=%d jac_step=% .9e armijo=% .9e backtrack=% .9e"
+      " pivot=% .9e E_floor=% .9e N_floor=% .9e"
       " n_atm=% .9e T_atm=% .9e n_threshold=% .9e n_min=% .9e n_max=% .9e"
       " T_min=% .9e T_max=% .9e h_min=% .9e v_max=% .9e\n",
       mb, code_units.MassDensityConversion(cgs_units),
@@ -1104,8 +1110,10 @@ static void ProjectionAbortContext(
       code_units.LengthConversion(cgs_units),
       code_units.TimeConversion(cgs_units),
       code_units.EnergyDensityConversion(cgs_units), eql_rho_min_cgs,
-      eql_t_min_mev, projection_tolerance, projection_relaxation,
-      projection_maxiter, energy_floor, number_floor, eos.GetDensityFloor(),
+      eql_t_min_mev, ctl.tolerance, ctl.max_iterations, ctl.chain_tolerance,
+      ctl.acceptance_slack, ctl.momentum_floor, ctl.line_search_maxiter,
+      ctl.jacobian_step, ctl.armijo, ctl.backtrack_factor, ctl.pivot_threshold,
+      energy_floor, number_floor, eos.GetDensityFloor(),
       eos.GetTemperatureFloor(), eos.GetThreshold(), eos.GetMinimumDensity(),
       eos.GetMaximumDensity(), eos.GetMinimumTemperature(),
       eos.GetMaximumTemperature(), eos.GetMinimumEnthalpy(),
@@ -1115,6 +1123,14 @@ static void ProjectionAbortContext(
 //! \fn ConservativeM1ProjectionImpl
 //! \brief Replace the matter-only bounce state with a local conservative
 //!        matter+radiation equilibrium in cells above the EQL cutoff.
+//!
+//! A cell the solver refuses is printed once, counted, and skipped: nothing of
+//! its state is written, so it keeps the pre-bounce moments and the conserved
+//! state it entered with, and it is unmasked with the rest at the end of the
+//! transition. That is the same state a cell below the equilibrium cutoff is
+//! left in, and it is local: one cell cannot end the run. Run-level conditions
+//! stay fatal - a missing M1 or dynamics object by the caller's return value,
+//! and an unmatched EOS policy in the dispatcher.
 template <class EOSPolicy, class ErrorPolicy>
 static bool ConservativeM1ProjectionImpl(MeshBlockPack *pmbp) {
   if (pmbp->pradm1 == nullptr)
@@ -1149,9 +1165,12 @@ static bool ConservativeM1ProjectionImpl(MeshBlockPack *pmbp) {
       pmbp->pradm1->params.opacity_type;
   const Real energy_floor = pmbp->pradm1->params.rad_E_floor;
   const Real number_floor = pmbp->pradm1->params.rad_N_floor;
-  const Real tolerance = projection_tolerance;
-  const Real relaxation = projection_relaxation;
-  const int max_iterations = projection_maxiter;
+  // Every threshold the solve applies comes from projection_controls, which
+  // UserProblem fills from the deck and validates by name. Nothing here is a
+  // relaxation of the radiation toward a target: every point the solver evaluates
+  // lies on the equilibrium manifold and the line search only shortens a step by
+  // the configured backtracking factor.
+  const ccsn::ProjectionControls ctl = projection_controls;
 
   auto &indcs = pmbp->pmesh->mb_indcs;
   const int is = indcs.is, nx1 = indcs.nx1;
@@ -1212,11 +1231,13 @@ static bool ConservativeM1ProjectionImpl(MeshBlockPack *pmbp) {
         if (!(detg > 0.0) || !Kokkos::isfinite(detg)) {
           // The metric decides whether the projection's undensitized variables
           // exist at all, so this site reports the metric instead of a state
-          // that cannot be derived from it.
+          // that cannot be derived from it. The z group holds the three velocity
+          // components the primitive solver stores, W v^i (the projection's z^i
+          // in PVX..PVZ), and not v^i.
           Kokkos::printf(
               "CCSN M1 projection FAIL rank=%d gid=%d cell=(%d,%d,%d) site=107"
               " detail=0 iter=-1 diff=% .9e"
-              " | prim rho=% .17e vx=% .9e vy=% .9e vz=% .9e P=% .9e T=% .17e"
+              " | prim rho=% .17e zx=% .9e zy=% .9e zz=% .9e P=% .9e T=% .17e"
               " Ye=% .17e"
               " | met=% .9e % .9e % .9e % .9e % .9e % .9e detg=% .17e\n",
               rank, gid_start + m, k, j, i, -1.0, initial_prim[PRH],
@@ -1258,12 +1279,18 @@ static bool ConservativeM1ProjectionImpl(MeshBlockPack *pmbp) {
 
         Real final_prim[NPRIM], final_cons[NCONS];
         Real final_rad[ccsn::projection_nspecies][ccsn::projection_nvars];
-        ccsn::ProjectionFailureReport fail = {0, 0, -1};
+        // The report is overwritten by every path that returns a failure, so this
+        // initialisation only states the convention: code 0 is "no failure
+        // recorded", and iteration, residual and worst_term start at -1 for
+        // "nothing has been evaluated yet", as the solver itself sets them.
+        ccsn::ProjectionFailureReport fail = {0, 0, -1, -1.0, 0, -1};
+        // The solve works in the cell's conserved variables, so initial_prim is
+        // not an input to it; the primitives enter through the failure line.
         const bool success = ccsn::ProjectM1Cell(
             ps_, opacity_type, code_units, eos_units, ngs_units,
-            initial_prim, old_cons, b, g3d, g3u, old_rad,
-            tolerance, max_iterations, relaxation, energy_floor * isdetg,
-            number_floor * isdetg, final_prim, final_cons, final_rad, &fail);
+            old_cons, b, g3d, g3u, old_rad, ctl,
+            energy_floor * isdetg, number_floor * isdetg, final_prim,
+            final_cons, final_rad, &fail);
         if (!success) {
           ccsn::PrintProjectionFailureLine(rank, gid_start + m, k, j, i, fail,
                                            initial_prim, old_cons, b, g3d,
@@ -1300,16 +1327,15 @@ static bool ConservativeM1ProjectionImpl(MeshBlockPack *pmbp) {
       Kokkos::Sum<int>(failures));
 
   if (failures != 0) {
-    ProjectionAbortContext(eos_mut, code_units, cgs_units, mb, energy_floor,
-                           number_floor);
-    std::cerr << "### FATAL: conservative M1 bounce projection failed in "
-              << failures << " cell(s) on rank " << global_variable::my_rank
-              << std::endl;
-#if MPI_PARALLEL_ENABLED
-    MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
-#else
-    std::abort();
-#endif
+    // The per-cell lines above are the actionable record; this line is their
+    // count and the run-level constants that turn those numbers into physical
+    // ones. The run continues: a cell that keeps its pre-bounce state is worth
+    // less than the post-bounce evolution it would otherwise stop.
+    ProjectionFailureContext(eos_mut, code_units, cgs_units, mb, ctl,
+                             energy_floor, number_floor);
+    std::cerr << "### WARNING: conservative M1 bounce projection left "
+              << failures << " cell(s) unprojected on rank "
+              << global_variable::my_rank << std::endl;
   }
   return true;
 }
@@ -1581,9 +1607,32 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
         pin->GetOrAddBoolean("problem", "equilibriate_post_bounce", true);
     conservative_bounce_projection =
         pin->GetOrAddBoolean("problem", "conservative_bounce_projection", false);
-    projection_tolerance = pin->GetOrAddReal("problem", "projection_tolerance", 1.0e-8);
-    projection_maxiter = pin->GetOrAddInteger("problem", "projection_maxiter", 50);
-    projection_relaxation = pin->GetOrAddReal("problem", "projection_relaxation", 0.5);
+    // Controls of the conservative bounce projection. Every threshold, tolerance
+    // and iteration cap the solve applies is read here and nowhere else, so the
+    // header holds no numeric policy and a failure line can be read against the
+    // values the solve used. Defaults reproduce the values the solver was
+    // developed and verified with; a run that changes one is changing the
+    // decision a cell is judged by, not merely a performance knob.
+    projection_controls.tolerance =
+        pin->GetOrAddReal("problem", "projection_tolerance", 1.0e-8);
+    projection_controls.max_iterations =
+        pin->GetOrAddInteger("problem", "projection_maxiter", 50);
+    projection_controls.chain_tolerance =
+        pin->GetOrAddReal("problem", "projection_chain_tolerance", 1.0e-10);
+    projection_controls.acceptance_slack =
+        pin->GetOrAddReal("problem", "projection_acceptance_slack", 10.0);
+    projection_controls.momentum_floor =
+        pin->GetOrAddReal("problem", "projection_momentum_floor", 1.0e-3);
+    projection_controls.line_search_maxiter =
+        pin->GetOrAddInteger("problem", "projection_line_search_maxiter", 25);
+    projection_controls.jacobian_step =
+        pin->GetOrAddReal("problem", "projection_jacobian_step", 1.0e-6);
+    projection_controls.armijo =
+        pin->GetOrAddReal("problem", "projection_armijo", 1.0e-4);
+    projection_controls.backtrack_factor =
+        pin->GetOrAddReal("problem", "projection_backtrack_factor", 0.5);
+    projection_controls.pivot_threshold =
+        pin->GetOrAddReal("problem", "projection_pivot_threshold", 1.0e-14);
     stop_at_bounce = pin->GetOrAddBoolean("problem", "stop_at_bounce", false);
     if (inject_equilibrium ||
         (detect_bounce && equilibriate_post_bounce && !conservative_bounce_projection)) {
@@ -1620,12 +1669,44 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
                   << std::endl;
         std::exit(EXIT_FAILURE);
       }
-      if (!(projection_tolerance > 0.0) || !std::isfinite(projection_tolerance) ||
-          projection_maxiter < 1 || !(projection_relaxation > 0.0 &&
-          projection_relaxation <= 1.0)) {
-        std::cerr << "### FATAL: invalid conservative projection controls" << std::endl;
-        std::exit(EXIT_FAILURE);
-      }
+      // Every control is validated by name, so a rejected run says which key is
+      // wrong. The message keeps the phrase the prebuilt test matches on.
+      auto require = [](const char *key, bool ok, const char *what) {
+        if (!ok) {
+          std::cerr << "### FATAL: invalid conservative projection controls: "
+                    << key << " " << what << std::endl;
+          std::exit(EXIT_FAILURE);
+        }
+      };
+      const ccsn::ProjectionControls &pc = projection_controls;
+      require("problem/projection_tolerance",
+              pc.tolerance > 0.0 && std::isfinite(pc.tolerance),
+              "must be positive and finite");
+      require("problem/projection_maxiter", pc.max_iterations >= 1,
+              "must be at least 1");
+      require("problem/projection_chain_tolerance",
+              pc.chain_tolerance > 0.0 && std::isfinite(pc.chain_tolerance),
+              "must be positive and finite");
+      require("problem/projection_acceptance_slack",
+              pc.acceptance_slack >= 1.0 && std::isfinite(pc.acceptance_slack),
+              "must be at least 1: it factors the convergence threshold");
+      require("problem/projection_momentum_floor",
+              pc.momentum_floor > 0.0 && std::isfinite(pc.momentum_floor),
+              "must be positive and finite");
+      require("problem/projection_line_search_maxiter",
+              pc.line_search_maxiter >= 1, "must be at least 1");
+      require("problem/projection_jacobian_step",
+              pc.jacobian_step > 0.0 && std::isfinite(pc.jacobian_step),
+              "must be positive and finite");
+      require("problem/projection_armijo",
+              pc.armijo > 0.0 && pc.armijo < 1.0,
+              "must lie strictly between 0 and 1");
+      require("problem/projection_backtrack_factor",
+              pc.backtrack_factor > 0.0 && pc.backtrack_factor < 1.0,
+              "must lie strictly between 0 and 1");
+      require("problem/projection_pivot_threshold",
+              pc.pivot_threshold >= 0.0 && std::isfinite(pc.pivot_threshold),
+              "must be non-negative and finite");
       eql_rho_min_cgs = pin->GetReal("problem", "eql_rho_min_cgs");
       eql_t_min_mev = pin->GetReal("problem", "eql_t_min_mev");
     }

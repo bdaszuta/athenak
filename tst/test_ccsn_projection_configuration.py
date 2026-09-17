@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Source checks for the backend-neutral conservative CCSN projection."""
+"""Source checks for backend-portable conservative CCSN projection."""
 
 import re
 from pathlib import Path
@@ -109,21 +109,40 @@ def test_projection_failure_instrumentation_reports_every_site():
     # path prints nothing: a failure reported across several prints could not be
     # matched up with its own state in a parallel log.
     assert "ProjectionFailureReport *fail_out" in header
-    assert "RecordProjectionFailure(fail_out, 100, 0, iteration," in header
-    assert "RecordProjectionFailure(fail_out, 101, recover_code, iteration," in header
-    assert "RecordProjectionFailure(fail_out, 102, 0, iteration," in header
-    assert "RecordProjectionFailure(fail_out, 103, recover_code, iteration," in header
-    assert "RecordProjectionFailure(fail_out, exact_target_ok ? 105 : 104, 0," in header
-    assert "RecordProjectionFailure(fail_out, 106, 0, max_iterations," in header
     assert "ReportProjectionTrial" not in header
     assert header.count("Kokkos::printf") == 1
 
+    # One code per rejection site of the coupled equilibrium solve: 100 the field
+    # is not computable, 101 the chain refused the point, 103/104 the acceptance
+    # step of the pair about to be written, 105 the acceptance test refused that pair
+    # and the budget ran out, 106 the iteration budget, 110
+    # the cell's own state is inadmissible at the start, 111/112/113 the Newton
+    # step, and 8 the PrimToCon consistency check.
+    for site in ("chain.site == 100 ? 100 : (iteration == 0 ? 110 : 101)",
+                 "acceptance.site == 100 ? 104 : 103",
+                 "Record(acceptance_refused ? 105 : 106, 0, ctl.max_iterations,",
+                 "Record(113, 0, iteration, norm, nullptr, nullptr);",
+                 "Record((failed_column >= 0) ? 111 : 112,",
+                 "out->detail = 8;"):
+        assert site in header, site
+    # A refused pair costs the iterations it needs rather than the cell: the
+    # acceptance test is bounded by the convergence threshold times a control,
+    # because the two tests measure different quantities and the same bound would
+    # make the acceptance test the stricter of the two.
+    assert "ctl.acceptance_slack * ctl.tolerance" in header
+    assert "acceptance_refused = true;" in header
+    assert "acceptance_difference = difference;" in header
+    assert "acceptance_refused ? acceptance_difference : norm" in header
+
     # The refused trial and the primitives C2P returned are recorded only where
     # they are defined, so a trial C2P rejected with an error never reports the
-    # output array C2P leaves undefined on that path.
-    assert "last_diff, trial_cons," in header
-    assert "exact_cons, exact_prim);" in header
-    assert "if (c2p_prim != nullptr && detail >= 2 && detail <= 5) {" in header
+    # output array C2P leaves undefined on that path: the fill stops at the error
+    # codes (20 and above) and the report carries whether it happened.
+    assert "chain.cons, chain.prim);" in header
+    assert "acceptance.cons, acceptance.prim);" in header
+    assert "if (c2p_prim != nullptr && detail < 20) {" in header
+    assert "int c2p_valid;" in header
+    assert "fail_out->c2p_valid = 1;" in header
 
     # One self-contained line per failed cell: identity, site, the full matter
     # state, the full M1 state, the refused trial and the C2P status reach one
@@ -139,14 +158,18 @@ def test_projection_failure_instrumentation_reports_every_site():
         assert report.count(species) == 1
     assert report.count("\\n") == 1
     assert report.count("Kokkos::printf") == 1
-    assert "const int has_trial = (fail.code == 101 || fail.code == 103)" in report
-    assert "const int has_c2p = (fail.detail >= 2 && fail.detail <= 5)" in report
+    # The line prints the refused point itself at the four sites that relay a
+    # chain refusal, so a failure can be replayed offline from the line alone; at
+    # 110 the state it would repeat is already printed as cons.
+    assert "const int has_trial = (fail.code == 100 || fail.code == 101 ||" in report
+    assert "fail.code == 103 || fail.code == 104)" in report
+    assert "fail.c2p_valid, fail.c2p_rho, fail.c2p_T, fail.c2p_Ye);" in report
 
     # The caller prints nothing while the projection succeeds, prints one line
     # per failed cell, and reports the metric instead of a state that cannot be
     # derived from it when the metric is not invertible.
     projection = source.split("static bool ConservativeM1ProjectionImpl", 1)[1]
-    assert "ccsn::ProjectionFailureReport fail = {0, 0, -1};" in projection
+    assert "ccsn::ProjectionFailureReport fail = {0, 0, -1, -1.0, 0, -1};" in projection
     assert ("ccsn::PrintProjectionFailureLine(rank, gid_start + m, k, j, i, fail,"
             in projection)
     assert "site=107" in projection
@@ -154,15 +177,117 @@ def test_projection_failure_instrumentation_reports_every_site():
     # path prints nothing and the failure line comes from the header helper.
     assert projection.count("Kokkos::printf") == 1
     assert "Kokkos::printf" not in projection.split("site=107", 1)[1]
-    # The run-level context line is printed once, after a failure is counted and
-    # before the abort, and never on the accepted path.
-    assert "ProjectionAbortContext(" in projection.split("if (failures != 0) {", 1)[1]
-    assert "### FATAL: conservative M1 bounce projection failed in " in projection
+    # The run-level context line is printed once, after the failures are counted,
+    # and never on the accepted path.
+    assert "ProjectionFailureContext(" in projection.split("if (failures != 0) {", 1)[1]
+    assert ("### WARNING: conservative M1 bounce projection left " in projection)
+    # A cell the solver cannot project is skipped rather than fatal: one cell
+    # keeps its pre-bounce state and the run continues, so the per-cell
+    # implementation contains no aborting call. The dispatcher may still abort on
+    # an unmatched EOS policy, which is a run-level condition.
+    impl = projection.split("static void ConservativeM1Projection(", 1)[0]
+    assert "MPI_Abort" not in impl
+    assert "std::abort" not in impl
 
-    # Acceptance semantics are untouched: the relaxed tolerance test and the
-    # exact-pass residual test still gate success.
-    assert "if (last_diff <= tolerance) {" in header
-    assert "exact_diff > tolerance" in header
+    # Acceptance semantics: the acceptance test that gated success before still
+    # gates it, now applied to the state the coupled solve writes. What changed is
+    # that the unknowns are the matter's conserved variables rather than a radiation
+    # blend, that the test and the convergence measure are metric-invariant, and
+    # that a refused pair is iterated rather than abandoned.
+    assert "if (norm <= ctl.tolerance) {" in header
+    assert "ctl.acceptance_slack * ctl.tolerance" in header
+    assert "EquilibriumChainResult" in header
+    assert "ConservedTotals(old_cons, old_rad, mb, tot)" in header
+    assert "Solve5x5(" in header
+    assert "MetricContractU" in header
+    assert "MetricNormU" in header
+    assert "ResidualNorm(residual, scale, g3u, &worst_term)" in header
+    # The term that carried the measure starts at -1, "nothing measured yet", and
+    # has one name in the report. The field that repeated it as phi_max is gone
+    # rather than renamed: it held the same number as residual in every record,
+    # including the acceptance-test difference at 105, so no honest second name
+    # existed for it.
+    assert "int worst_term = -1;" in header
+    assert "int *worst_term = nullptr" in header
+    assert "fail_out->worst_term = worst_term;" in header
+    assert "phi_max" not in header
+    assert "phi_index" not in header
+    assert "lane" not in header
+    # The report and the failure line name the same set of sites for the refused
+    # state and for the chain's rejection sub-code, so the two cannot drift apart.
+    assert "101, 103, 104 and 110" in header
+    assert "filled at 100, 101, 103 and 104" in header
+    # The scaled unknowns and the scaled residual say what they are; the
+    # two-letter shorthand u/phi is gone.
+    assert "Real scaled_x[projection_nvars];" in header
+    assert "Real scaled_residual[projection_nvars];" in header
+    assert "probe_scaled_residual" in header
+    assert "Real phi[" not in header
+    # The chain copies only the primitive slots C2P writes, so it never reads the
+    # indeterminate tail of the chain result's array.
+    assert "prim_copy[n] = out->prim[n];" in header
+    assert "for (int n = 0; n < NPRIM; ++n) {" not in header
+    assert header.count(
+        "const int nprim_active = PYF + ps.GetEOS().GetNSpecies();") == 3
+    # The driver carries only the field it needs across iterations: the unused
+    # primitive copy is gone.
+    assert "prim[n] = chain.prim[n];" not in header
+    # The failure line prints the chain evaluations attempted and the term that
+    # carried the measure, so one line separates "the entering state was refused"
+    # from "the last permitted Newton step was refused" and names what was
+    # unsatisfied.
+    assert "evals=%d worst_term=%d" in header
+    # evals counts attempts rather than successes: the counter is raised before
+    # each of the four chain calls, so a refused probe is included and the number
+    # on a failure line is what the cell actually cost.
+    assert header.count("++evals;") == 4
+    for call in ("&chain)) {", "&acceptance)) {",
+                 "&probe_chain)) {", "&trial_chain)) {"):
+        assert "++evals;" in header.split(call, 1)[0][-400:], call
+    assert "ProjectionDifference(rad, acceptance.rad, g3u," in header
+    assert "ctl.jacobian_step" in header
+    assert "Solve5x5(jacobian, rhs, ctl.pivot_threshold, du)" in header
+    # The PrimToCon consistency check measures its difference the way the residual
+    # is measured, so no acceptance criterion depends on the spatial coordinate
+    # basis: a componentwise maximum would reject in one basis what it accepts in
+    # another, and a rejection here stops the run.
+    assert "MetricNormU(g3u, check_momentum)" in header
+    # The under-relaxation of the field is gone from every layer, and every
+    # threshold the line search applies is a control rather than a constant.
+    assert "alpha *= ctl.backtrack_factor;" in header
+    assert "ctl.line_search_maxiter" in header
+    assert "1.0 - ctl.armijo * alpha" in header
+    assert "relaxation" not in header
+    assert "projection_relaxation" not in source
+    # The budget is counted in steps, and every point a permitted step produces is
+    # measured and tested before the budget is declared exhausted, so no evaluated
+    # point is discarded and no root the budget allows is missed.
+    assert "for (int iteration = 0;; ++iteration) {" in header
+    assert "if (iteration >= ctl.max_iterations) {" in header
+    # The relaxation-toward-a-target loop and its complement helper are gone, and
+    # the primitives are no longer an input to the solver.
+    assert "MatterComplement" not in header
+    assert "trial_rad" not in header
+    assert "const Real initial_prim[NPRIM]," not in header
+    # The solver holds no numeric policy: every threshold, tolerance and iteration
+    # cap is a member of ProjectionControls, and the caller reads each one from the
+    # deck, so a failure line can be read against the values the solve used.
+    assert "struct ProjectionControls" in header
+    assert "const ProjectionControls &ctl," in header
+    assert "constexpr Real k" not in header
+    assert "constexpr int k" not in header
+    assert source.count('GetOrAddReal("problem", "projection_') == 8
+    assert source.count('GetOrAddInteger("problem", "projection_') == 2
+    for key in ("projection_tolerance", "projection_maxiter",
+                "projection_chain_tolerance", "projection_acceptance_slack",
+                "projection_momentum_floor", "projection_line_search_maxiter",
+                "projection_jacobian_step", "projection_armijo",
+                "projection_backtrack_factor", "projection_pivot_threshold"):
+        assert f'"{key}"' in source, key
+    # Each control is validated by name, and the phrase the behavioural test
+    # matches on survives the per-key message.
+    assert "invalid conservative projection controls: " in source
+    assert source.count("require(\"problem/projection_") == 10
 
 
 def test_projection_failure_line_format_matches_its_arguments():

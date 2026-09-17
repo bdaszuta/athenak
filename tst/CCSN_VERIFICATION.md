@@ -94,10 +94,20 @@ input data on the small retained domain; no such dataset was resolved here.
 Native binary fields are float32 even with a double executable. State-preserving
 comparisons require exact stored-field equality, without ULP bands or excluded
 cells; restart-roundoff differences must be diagnosed rather than silently hidden.
-These dumps do NOT certify the unchanged projection solver tolerance (normally
-1e-8). Check full-precision equilibrium residuals and matter+radiation totals,
-electron-lepton conservation using the active EOS baryon mass, moving/magnetized
-P2C consistency and cell-solver failure/no-live-write behavior separately.
+These dumps do NOT certify the projection solver tolerance (normally 1e-8) or its
+convergence. The projection solves the coupled matter/radiation equilibrium in the
+matter's conserved variables, so check separately: the invariant scaled residual
+and the Newton iteration and evaluation counts at the failing cells, the same with
+a nonzero field, the acceptance difference of the state that is written together
+with its ratio to the acceptance slack (a margin near one is a pair the containment
+path is about to iterate on or catch), and that
+the written matter state is the exact complement of the written field, so combined
+matter+radiation totals and the electron lepton number (using the active EOS baryon
+mass) are preserved to roundoff. Also check that a state pinned at a C2P floor is
+rejected rather than written (site 101, detail 8, the PrimToCon consistency check),
+that a refused cell is skipped without stopping the run and is counted in the
+projection WARNING line,
+moving/magnetized P2C consistency, and cell-solver failure/no-live-write behavior.
 
 Post-bounce continuation exercises restored feedback but does not independently
 measure each feedback channel's source term or detect every possible accidental

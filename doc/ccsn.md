@@ -94,44 +94,114 @@ configured material backreaction. The backend is selected through the deck's
 `radiation_m1/opacity_type` value: BNS-NuRates requires Athena_ENABLE_NURATES=ON, and the
 standalone weakrates backend works with it either OFF or ON. Each backend supplies the
 equilibrium target using the same constants and units as its opacity implementation.
-The projection source names no backend. The projection uses unchanged donor
-tolerances and rejects failed or repaired C2P
-trial states; accepted cells preserve combined matter/radiation energy, momentum
-and electron lepton number by constructing the complementary material conserved state.
+The projection source names no backend. The projection solves the coupled matter/radiation equilibrium directly: the
+unknowns are the matter's own undensitized conserved variables (energy, momentum
+and electron lepton number), the radiation is eliminated by its closure, and a
+damped Newton iteration with a line search drives the five conservation statements
+to zero. Donor C2P tolerances are unchanged, and a failed or repaired C2P state is
+rejected at every evaluation, including the state that is finally written. The
+written matter state is the exact complement of the field it is paired with, so
+accepted cells preserve combined matter/radiation energy, momentum and electron
+lepton number to roundoff: that is a property of the pair that is constructed, not
+of any tolerance.
+Ten controls reach the projection, all read from `<problem>` with the defaults
+below; the solver holds no threshold, tolerance or iteration cap of its own, and
+the failure context line prints every one of them so a failure can be read against
+the values the solve used. A run that changes one is changing the decision a cell
+is judged by:
+
+| key | default | what it bounds |
+|---|---|---|
+| `projection_tolerance` | `1e-8` | relative bound on the scaled residual that ends the Newton solve |
+| `projection_maxiter` | `50` | budget of Newton steps; counted so the point the last permitted step produces is measured and tested before the budget is declared exhausted |
+| `projection_chain_tolerance` | `1e-10` | PrimToCon round trip every chain point must pass; this grades a state the code reconstructed itself, so it can be no tighter than the primitive solver that produced it; its energy term is measured against the larger of the cell's total and rest-mass energy density, since the conserved energy is rebuilt by subtracting the rest-mass term |
+| `projection_acceptance_slack` | `10.0` | factor on `projection_tolerance` giving the acceptance bound of the written pair |
+| `projection_momentum_floor` | `1e-3` | smallest momentum scale, as a speed in units of D, so a cell at rest still has a nonzero scale |
+| `projection_line_search_maxiter` | `25` | backtracking trials per Newton step |
+| `projection_jacobian_step` | `1e-6` | relative finite-difference step of the scaled unknowns |
+| `projection_armijo` | `1e-4` | sufficient-decrease constant of the line search |
+| `projection_backtrack_factor` | `0.5` | step-shortening factor per backtracking trial |
+| `projection_pivot_threshold` | `1e-14` | relative pivot floor of the 5x5 solve |
+
+The last five change the path the solve takes rather than the criterion it is
+judged by: loosening `projection_armijo` or the backtracking factor can stop a
+cell converging, so change them with a reason and re-run the convergence checks.
+The deck's `projection_relaxation` key is retired: a Newton step with a line
+search has no relaxation to tune.
+Before a pair is written it is re-derived through its own exact complement and
+required to reproduce the field it came from within `projection_acceptance_slack`
+times `projection_tolerance`. That test bounds the mutual consistency of the
+pair, and it is deliberately looser than the convergence test: the two measure
+different quantities - the residual is scaled by the cell totals and the acceptance
+difference by the field alone, so the same bound would make the acceptance test the
+stricter of the two by the field's dimensionless response to the matter. A pair
+that fails it is not written; the solve continues from the acceptance point, so a
+refusal costs iterations, bounded by the step budget.
 Nothing is printed while the projection succeeds. A cell that cannot be projected
 reports one line per failed cell: device output from different threads and ranks is
 not ordered, so a failure split across several prints cannot be matched up with its
 own state afterwards. The line names the cell (MPI rank, global meshblock id and
 meshblock-local k, j, i), the failing site as `site`, `detail` and `iter`, and the
-state the projection consumed there: the matter primitives (`prim`: rho, v^i, P, T,
-Ye), the undensitized matter conserved state (`cons`), the spatial metric (`met`),
+state the projection consumed there: the matter primitives (`prim`: rho, the three
+velocity components `W v^i`, P, T, Ye), the undensitized matter conserved state
+(`cons`), the spatial metric (`met`),
 the contravariant field (`B_u`), the undensitized four-species M1 state (`m1`:
-E, Fx, Fy, Fz and N per species, in nue, anue, nux, anux order) and the matter
-state the failing test was applied to (`fail`). A recovery site also carries the
-complemented matter state handed to C2P (`trial`, valid when `trial=1`, that is
-sites 101 and 103) and the primitives C2P returned (`c2p`, valid when `c2p=1`, that
-is when C2P returned a floored or adjusted state rather than an error). Every
-quantity is in the projection's own variables and units, so the failing call can be
-replayed offline without further conversion: rho is a baryon number density in
-1/code-length^3, T is in MeV, and the matter and radiation conserved arrays are
-undensitized. The metric site (107) has no undensitized state to report, so its line
-carries the cell, the metric and the matter primitives instead.
+E, Fx, Fy, Fz and N per species, in nue, anue, nux, anux order) and the last
+point whose chain evaluation completed (`fail`; at 100 and 104 that is the
+previous point, the state the test saw being the `c2p` group). A site that relays
+a chain refusal also carries the state the chain refused (`trial`, valid when
+`trial=1`, that is sites 100, 101, 103 and 104; at 110 the chain holds the
+entering state, which the `cons` group above already prints) and the primitives
+C2P returned (`c2p`, valid when `c2p=1`, that is whenever C2P returned a state
+rather than an error, which is any `detail` below 20). Every quantity is in the
+projection's own variables and units, so the
+failing call can be replayed offline without further conversion: rho is a baryon
+number density in 1/code-length^3, T is in MeV, and the matter and radiation
+conserved arrays are undensitized. The velocity components are the ones the
+primitive solver stores, `W v^i` (`zx`, `zy`, `zz` in the line, the projection's
+`z^i` in `PVX..PVZ`), and not `v^i`: the replay takes `v^i = z^i / W` with
+`W = sqrt(1 + g_ij z^i z^j)` from the metric the line prints. The metric site (107)
+has no undensitized state to report, so its line carries the cell, the metric and
+the matter primitives instead.
 
-`site` is the failing test: 100 iteration target not computable, 101 relaxed-trial
-recovery rejected, 102 recovered-state target not computable, 103 exact-trial
-recovery rejected, 104 exact-pass target not computable, 105 exact-pass residual
-above tolerance, 106 iteration budget exhausted, 107 spatial metric not invertible.
-`diff` is the most recent relaxed residual, the exact-pass residual at 105, and -1
-before any residual has been evaluated. Codes 101 and 103 carry the recovery
-sub-code as `detail` (2 conserved floor, 3 primitive floor, 4 conserved adjustment,
-5 conserved value changed or nonfinite, 6 active primitive nonfinite, 7 magnetic
-field changed, or 20 plus the Primitive::Error enumerator when C2P returned an
-error: 21 RHO_TOO_BIG, 22 RHO_TOO_SMALL, 23 NANS_IN_CONS, 24 MAG_TOO_BIG, 25
-BRACKETING_FAILED, 26 NO_SOLUTION, 27 CONS_FLOOR, 28 PRIM_FLOOR, 29
-CONS_ADJUSTED). The code-to-CGS conversions, the equilibrium gate, the projection
-controls, the M1 floors and the EOS error-policy floors that are identical for every
-cell are printed once as a context line, and the rank-local failure count is
-reported before the run stops.
+`site` is the failing test: 100 the equilibrium field is not computable, 101 the
+matter recovery or its consistency check refused the point, 103 the exact
+complement of the converged field is not recoverable, 104 its equilibrium field is
+not computable, 105 the acceptance test of the converged pair refused at least once
+and the step budget ran out before the pair moved inside the slack, 106
+the iteration budget is exhausted, 107 the spatial metric is not invertible, 110
+the cell's own state is not admissible at the start point, 111 a Jacobian column
+could not be formed, 112 the Jacobian is numerically singular, 113 the line search
+found no step that lowered the residual.
+`diff` is the scaled residual of the last point the chain evaluated successfully,
+the acceptance difference at 105, and -1 before any residual has been evaluated;
+`evals` is the number of chained evaluations attempted by then (a refused probe
+counts), and `worst_term` is the
+term that carried that residual, as the term index 0 energy, 1 momentum, 4 electron
+lepton number (-1 before the first evaluation). Sites 101, 103, 104 and 110 carry
+the rejection sub-code as `detail` (2 conserved floor, 3 primitive floor, 4
+conserved adjustment, 5 conserved value changed or nonfinite, 6 active primitive
+nonfinite, 7 magnetic field changed, or 20 plus the Primitive::Error enumerator
+when C2P returned an error: 21 RHO_TOO_BIG, 22 RHO_TOO_SMALL, 23 NANS_IN_CONS, 24
+MAG_TOO_BIG, 25 BRACKETING_FAILED, 26 NO_SOLUTION, 27 CONS_FLOOR, 28 PRIM_FLOOR, 29
+CONS_ADJUSTED), 8 when the primitives C2P returned do not reproduce the requested
+conserved state through the code's own PrimToCon, the failed column index at 111,
+and 0 otherwise - including at 110 when the start point is refused for an invalid
+scale rather than by the chain. `trial` carries the state the chain refused and is
+printed at 100, 101, 103 and 104; at 110 that state is the entering state the `cons`
+group already prints. The code-to-CGS conversions, the equilibrium gate, the
+projection controls, the M1 floors and the EOS error-policy floors that are
+identical for every cell are printed once as a context line, and the rank-local
+failure count is reported in a
+`### WARNING: conservative M1 bounce projection left N cell(s) unprojected on rank
+R` line.
+A failed cell is counted and skipped, not fatal: nothing of its state is written,
+so it keeps the pre-bounce moments and the conserved state it entered with and is
+unmasked with the rest of the grid. That is the same condition a cell below the
+equilibrium cutoff is in, and it is why a post-bounce state should be read against
+that WARNING line: a skipped cell carries no equilibrium field. Only run-level
+conditions stay fatal - the startup validation of the projection's controls and of
+the backends it needs, and an EOS policy the projection has no instantiation for.
 
 Evolving one-way M1 before bounce, followed by recoupling without replacing its
 moments:
