@@ -157,6 +157,16 @@ endif()
 # Optionally include bns_nurates headers
 if (ENABLE_NURATES)
   target_include_directories(athena PRIVATE ${CMAKE_SOURCE_DIR}/bns_nurates/include)
+  # The library declares integrator array bounds from values it reads at run
+  # time: 27 such declarations in integration.hpp at the revision vendored here.
+  # hipcc diagnoses each one in both the host and the device pass, 56 warnings
+  # in a fresh build. Its own 1D integrator already uses fixed BS_N_MAX extents,
+  # so the durable fix belongs to the library; until its 2D integrators do the
+  # same, silence that one diagnostic for the target that can include it. Other
+  # targets do not inherit the flag and no other diagnostic is affected. A later
+  # library revision can add VLA sites without a diagnostic, so re-measure the
+  # count above when the vendored revision changes.
+  target_compile_options(athena PRIVATE -Wno-vla-cxx-extension)
 endif()
 
 if (${PROBLEM} MATCHES "z4c/spectre/*")
