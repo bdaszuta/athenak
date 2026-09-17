@@ -75,7 +75,6 @@ struct RadiationM1Params {
   bool backreact;
   bool backreact_tmunu;
   
-  int nspecies;              // number of neutrino species
   Real closure_epsilon;      // precision with which to find closure
   int closure_maxiter;       // maximum number of iterations in closure root finder
   bool closure_newton_bracket;  // safeguard the Newton closure with a [0,1] bracket
