@@ -27,6 +27,7 @@
 #include "eos/primitive-solver/fermi_dirac_integrals.hpp"
 #include "eos/primitive-solver/unit_system.hpp"
 #include "radiation_m1/radiation_m1_params.hpp"
+#include "radiation_m1/radiation_m1_weakrates.hpp"
 
 namespace radiationm1 {
 
@@ -48,7 +49,7 @@ static_assert(M1_TOTAL_NUM_SPECIES == equilibrium_nspecies,
 
 KOKKOS_INLINE_FUNCTION
 bool equilibrium_available(const RadiationM1OpacityType opacity_type) {
-  return opacity_type == BnsNurates;
+  return opacity_type == BnsNurates || opacity_type == WeakRates;
 }
 
 //----------------------------------------------------------------------------------------
@@ -107,6 +108,33 @@ bool equilibrium_densities(const RadiationM1OpacityType opacity_type,
     J_nue /= unit_ene_dens;
     J_anue /= unit_ene_dens;
     J_nux_total /= unit_ene_dens;
+  } else if (opacity_type == WeakRates) {
+    // The weakrates backend evaluates its equilibrium densities in CGS and converts them to EOS
+    // number-density and code energy-density units with its own conversion struct. That struct is
+    // defined against CGS, the unit system whose derived units are all unity (see
+    // Primitive::MakeCGS), so each factor is the corresponding UnitSystem conversion with
+    // b = CGS evaluated here:
+    //   LengthConversion(b)        = b.length/length                    -> 1/code_units.length
+    //   TimeConversion(b)          = b.time/time                        -> 1/code_units.time
+    //   NumberDensityConversion(b) = b.numberDensity/numberDensity      -> 1/eos_units.numberDensity
+    //   EnergyDensityConversion(b) = (volume/b.volume)*(b.energy/energy) -> code_units.volume/code_units.energy
+    // The object Primitive::CGS cannot be named: this function is device code, while that object is
+    // host-only. tst/test_m1_equilibria_weakrates.py checks these factors against the unit-system
+    // definitions and the unity CGS fields they assume.
+    const radiationm1::weakrates::UnitConversions conversions{
+        1.0 / code_units.length,
+        1.0 / code_units.time,
+        1.0 / eos_units.numberDensity,
+        code_units.volume / code_units.energy};
+    radiationm1::weakrates::EquilibriumDensities densities =
+        radiationm1::weakrates::ComputeEquilibriumDensities(temp, eta_nue);
+    radiationm1::weakrates::ConvertToCodeUnits(conversions, densities);
+    n_nue = densities.number[radiationm1::weakrates::kNuE];
+    n_anue = densities.number[radiationm1::weakrates::kAntiNuE];
+    n_nux_total = densities.number[radiationm1::weakrates::kNuX];
+    J_nue = densities.energy[radiationm1::weakrates::kNuE];
+    J_anue = densities.energy[radiationm1::weakrates::kAntiNuE];
+    J_nux_total = densities.energy[radiationm1::weakrates::kNuX];
   } else {
     return false;
   }
