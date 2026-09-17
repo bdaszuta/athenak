@@ -13,7 +13,10 @@
 
 namespace radiationm1 {
 
-// Computes the closure in the lab frame with a rootfinding procedure
+// Computes the closure in the lab frame with a rootfinding procedure.
+// On return `chi` is the Eddington factor and `xi` is the closure flux factor
+// sqrt(H_a H^a)/J that produced it.  Every exit path sets both.  Callers that
+// do not need xi use the forwarding overload below.
 KOKKOS_INLINE_FUNCTION void calc_closure(
     BrentFunctor BrentFunc, const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_dd,
     const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_uu,
@@ -21,18 +24,20 @@ KOKKOS_INLINE_FUNCTION void calc_closure(
     const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &u_u,
     const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &v_d,
     const AthenaPointTensor<Real, TensorSymm::NONE, 4, 2> &proj_ud, const Real &E,
-    const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &F_d, Real &chi,
+    const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &F_d, Real &chi, Real &xi,
     AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &P_dd,
     const RadiationM1Params &m1_params, const RadiationM1Closure &closure_type) {
   // Special cases for which no rootfinding needed
   if (closure_type == Eddington) {
     chi = 1. / 3.;
+    xi = 0.0;  // thick limit
     apply_closure(g_dd, g_uu, n_d, w_lorentz, u_u, v_d, proj_ud, E, F_d, chi, P_dd,
                   m1_params);
     return;
   }
   if (closure_type == Thin) {
     chi = 1.0;
+    xi = 1.0;
     apply_closure(g_dd, g_uu, n_d, w_lorentz, u_u, v_d, proj_ud, E, F_d, chi, P_dd,
                   m1_params);
     return;
@@ -50,11 +55,12 @@ KOKKOS_INLINE_FUNCTION void calc_closure(
               ? Kokkos::fmin(1.0, Kokkos::sqrt(Kokkos::fmax(0.0,
                                      tensor_dot(g_uu, Hg_d, Hg_d))) / E)
               : 0.5;
-      Real xi{};
+      Real xi_root{};
       const MathSignal ierr = NewtonClosure(g_dd, g_uu, n_d, w_lorentz, u_u, v_d,
-                                            proj_ud, E, F_d, m1_params, xi0, xi);
+                                            proj_ud, E, F_d, m1_params, xi0, xi_root);
       if (ierr == LinalgSuccess) {
-        chi = closure_fun(xi, closure_type);
+        chi = closure_fun(xi_root, closure_type);
+        xi = xi_root;
         apply_closure(g_dd, g_uu, n_d, w_lorentz, u_u, v_d, proj_ud, E, F_d, chi,
                       P_dd, m1_params);
         return;
@@ -84,9 +90,11 @@ KOKKOS_INLINE_FUNCTION void calc_closure(
       if (Kokkos::abs(z_th) < Kokkos::abs(z_ed)) {
         // Kokkos::printf("LinalgEinval: set chi = 1\n");
         chi = 1.0;
+        xi = 1.0;
       } else {
         // Kokkos::printf("LinalgEinval: set chi = 1/3\n");
         chi = 1. / 3.;
+        xi = 0.0;
       }
       apply_closure(g_dd, g_uu, n_d, w_lorentz, u_u, v_d, proj_ud, E, F_d, chi, P_dd,
                     m1_params);
@@ -111,6 +119,7 @@ KOKKOS_INLINE_FUNCTION void calc_closure(
     } while (ierr == LinalgContinue && iter < m1_params.closure_maxiter);
 
     chi = closure_fun(x_md, closure_type);
+    xi = x_md;
     apply_closure(g_dd, g_uu, n_d, w_lorentz, u_u, v_d, proj_ud, E, F_d, chi, P_dd,
                     m1_params);
 #ifdef DEBUG_BUILD
@@ -121,6 +130,23 @@ KOKKOS_INLINE_FUNCTION void calc_closure(
     }
 #endif
   }
+}
+
+// Overload for callers that do not need the closure flux factor.  It forwards
+// to the primary and discards xi, so those call sites stay unchanged.
+KOKKOS_INLINE_FUNCTION void calc_closure(
+    BrentFunctor BrentFunc, const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_dd,
+    const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_uu,
+    const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &n_d, const Real &w_lorentz,
+    const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &u_u,
+    const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &v_d,
+    const AthenaPointTensor<Real, TensorSymm::NONE, 4, 2> &proj_ud, const Real &E,
+    const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &F_d, Real &chi,
+    AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &P_dd,
+    const RadiationM1Params &m1_params, const RadiationM1Closure &closure_type) {
+  Real xi_unused{};
+  calc_closure(BrentFunc, g_dd, g_uu, n_d, w_lorentz, u_u, v_d, proj_ud, E, F_d, chi,
+               xi_unused, P_dd, m1_params, closure_type);
 }
 
 }  // namespace radiationm1

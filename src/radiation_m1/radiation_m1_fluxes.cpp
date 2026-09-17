@@ -170,6 +170,7 @@ TaskStatus RadiationM1::CalculateFluxes(Driver *pdrive, int stage) {
 
   auto &u0_ = pmy_pack->pradm1->u0;
   auto &chi_ = pmy_pack->pradm1->chi;
+  auto &xi_ = pmy_pack->pradm1->xi;
   adm::ADM::ADM_vars &adm = pmy_pack->padm->adm;
 
   DvceArray5D<Real> w0_ = w0;
@@ -208,7 +209,15 @@ TaskStatus RadiationM1::CalculateFluxes(Driver *pdrive, int stage) {
           kappa_ave = 0.5 * (abs_1_(m, nuidx, k, j, i - 1) + abs_1_(m, nuidx, k, j, i) +
                              scat_1_(m, nuidx, k, j, i - 1) + scat_1_(m, nuidx, k, j, i));
         }
-        Real A_jp12 = Kokkos::fmin(1., 1. / (kappa_ave * mbsize.d_view(m).dx1));
+        Real A_jp12;
+        if (params_.flux_hybrid == FluxHybridMinModC) {
+          // GRA HybridizeMinModC: hybridise on the closure flux factor averaged
+          // over the two cells flanking the face.
+          A_jp12 = Kokkos::fmin(1.0, 0.5 * (xi_(m, nuidx, k, j, i - 1) +
+                                            xi_(m, nuidx, k, j, i)));
+        } else {
+          A_jp12 = Kokkos::fmin(1., 1. / (kappa_ave * mbsize.d_view(m).dx1));
+        }
 
         for (int momidx = 0; momidx < nvars_; ++momidx) {
           const Real ujm = u0_(m, CombinedIdx(nuidx, momidx, nvars_), k, j, i - 2);
@@ -273,7 +282,13 @@ TaskStatus RadiationM1::CalculateFluxes(Driver *pdrive, int stage) {
                 0.5 * (abs_1_(m, nuidx, k, j - 1, i) + abs_1_(m, nuidx, k, j, i) +
                        scat_1_(m, nuidx, k, j - 1, i) + scat_1_(m, nuidx, k, j, i));
           }
-          Real A_jp12 = Kokkos::fmin(1., 1. / (kappa_ave * mbsize.d_view(m).dx2));
+          Real A_jp12;
+          if (params_.flux_hybrid == FluxHybridMinModC) {
+            A_jp12 = Kokkos::fmin(1.0, 0.5 * (xi_(m, nuidx, k, j - 1, i) +
+                                              xi_(m, nuidx, k, j, i)));
+          } else {
+            A_jp12 = Kokkos::fmin(1., 1. / (kappa_ave * mbsize.d_view(m).dx2));
+          }
 
           for (int momidx = 0; momidx < nvars_; ++momidx) {
             const Real ujm = u0_(m, CombinedIdx(nuidx, momidx, nvars_), k, j - 2, i);
@@ -339,7 +354,13 @@ TaskStatus RadiationM1::CalculateFluxes(Driver *pdrive, int stage) {
                 0.5 * (abs_1_(m, nuidx, k - 1, j, i) + abs_1_(m, nuidx, k, j, i) +
                        scat_1_(m, nuidx, k - 1, j, i) + scat_1_(m, nuidx, k, j, i));
           }
-          Real A_jp12 = Kokkos::fmin(1., 1. / (kappa_ave * mbsize.d_view(m).dx3));
+          Real A_jp12;
+          if (params_.flux_hybrid == FluxHybridMinModC) {
+            A_jp12 = Kokkos::fmin(1.0, 0.5 * (xi_(m, nuidx, k - 1, j, i) +
+                                              xi_(m, nuidx, k, j, i)));
+          } else {
+            A_jp12 = Kokkos::fmin(1., 1. / (kappa_ave * mbsize.d_view(m).dx3));
+          }
 
           for (int momidx = 0; momidx < nvars_; ++momidx) {
             const Real ujm = u0_(m, CombinedIdx(nuidx, momidx, nvars_), k - 2, j, i);

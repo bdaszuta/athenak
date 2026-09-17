@@ -51,6 +51,14 @@ enum RadiationM1ClosureSolver {
 };
 
 //----------------------------------------------------------------------------------------
+//! \enum RadiationM1FluxHybrid
+//  \brief choice of hybridisation factor for the M1 flux reconstruction
+enum RadiationM1FluxHybrid {
+  FluxHybridKappa,    // min(1, 1/(kappa_ave*dx)): current scheme (GRA HybridizeMinModA form)
+  FluxHybridMinModC,  // min(1, 0.5*(xi_(i-1)+xi_(i))): GRA HybridizeMinModC
+};
+
+//----------------------------------------------------------------------------------------
 //! \struct RadiationM1Params
 //  \brief parameters for the Grey M1 class
 struct RadiationM1Params {
@@ -58,6 +66,7 @@ struct RadiationM1Params {
   RadiationM1ClosureSolver closure_solver;  // rootfinder for the closure
   RadiationM1OpacityType opacity_type;  // choice of opacity library
   RadiationM1SrcUpdate src_update;      // choice of source update
+  RadiationM1FluxHybrid flux_hybrid;    // choice of flux hybridisation factor
 
   bool gr_sources;      // include GR sources
   bool matter_sources;  // include matter sources

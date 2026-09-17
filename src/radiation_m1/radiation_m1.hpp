@@ -82,6 +82,7 @@ class RadiationM1 {
   DvceArray5D<Real> u0;              // evolved variables
   DvceArray5D<Real> coarse_u0;       // evolved variables on 2x coarser grid
   DvceArray5D<Real> chi;             // Eddington factor
+  DvceArray5D<Real> xi;              // closure flux factor sqrt(H_a H^a)/J (flux hybridisation)
   DvceArray4D<bool> radiation_mask;  // radiation mask
   DvceArray5D<Real> u1;              // evolved variables at intermediate step
   DvceFaceFld5D<Real> uflx;          // fluxes of evo. quantities on cell faces

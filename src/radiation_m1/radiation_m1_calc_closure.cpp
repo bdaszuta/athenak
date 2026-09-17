@@ -24,6 +24,7 @@ TaskStatus RadiationM1::FloorAndCalcClosure(Driver* pdrive, int stage) {
 
   auto& u0_ = pmy_pack->pradm1->u0;
   auto& chi_ = pmy_pack->pradm1->chi;
+  auto& xi_ = pmy_pack->pradm1->xi;
   auto nmb1 = pmy_pack->nmb_thispack - 1;
   auto& nvars_ = pmy_pack->pradm1->nvars;
   auto& nspecies_ = pmy_pack->pradm1->nspecies;
@@ -61,6 +62,7 @@ TaskStatus RadiationM1::FloorAndCalcClosure(Driver* pdrive, int stage) {
               u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i) = 0;
             }
             chi_(m, nuidx, k, j, i) = 0;
+            xi_(m, nuidx, k, j, i) = 0;
           }
         } else {
           // calculate metric and inverse metric
@@ -145,11 +147,13 @@ TaskStatus RadiationM1::FloorAndCalcClosure(Driver* pdrive, int stage) {
                   floor_number(N, params_);
             }
             Real chi{};
+            Real xi{};
             AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> Ptemp_dd{};
             calc_closure(BrentFunc_, g_dd, g_uu, n_d, w_lorentz, u_u, v_d,
-                         proj_ud, E, F_d, chi, Ptemp_dd, params_,
+                         proj_ud, E, F_d, chi, xi, Ptemp_dd, params_,
                          params_.closure_type);
             chi_(m, nuidx, k, j, i) = chi;
+            xi_(m, nuidx, k, j, i) = xi;
           };
         }
       });

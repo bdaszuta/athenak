@@ -34,6 +34,7 @@ RadiationM1::RadiationM1(MeshBlockPack *ppack, ParameterInput *pin)
       abs_1("abs_1", 1, 1, 1, 1, 1),
       scat_1("scat_1", 1, 1, 1, 1, 1),
       chi("chi", 1, 1, 1, 1, 1),
+      xi("xi", 1, 1, 1, 1, 1),
       uflx("rad_uflx", 1, 1, 1, 1, 1) {
   // set up parameters and flags
   ishydro = pin->DoesBlockExist("hydro");
@@ -110,6 +111,20 @@ RadiationM1::RadiationM1(MeshBlockPack *ppack, ParameterInput *pin)
   // for unsafeguarded Newton steps; a failed solve still falls back to Brent.
   params.closure_newton_bracket =
       pin->GetOrAddBoolean("radiation_m1", "closure_newton_bracket", true);
+
+  // set the flux hybridisation factor (default: kappa). "kappa" keeps the
+  // min(1, 1/(kappa_ave*dx)) scheme; "minmod_c" selects GRA's HybridizeMinModC,
+  // which averages the closure flux factor xi over the two cells flanking a face.
+  std::string flux_hybrid =
+      pin->GetOrAddString("radiation_m1", "flux_hybrid", "kappa");
+  if (flux_hybrid == "kappa") {
+    params.flux_hybrid = FluxHybridKappa;
+  } else if (flux_hybrid == "minmod_c") {
+    params.flux_hybrid = FluxHybridMinModC;
+  } else {
+    std::cerr << "Error: Unknown choice for flux_hybrid: " << flux_hybrid << std::endl;
+    exit(EXIT_FAILURE);
+  }
 
   // set source update strategy (default: implicit)
   std::string src_update = pin->GetOrAddString("radiation_m1", "src_update", "implicit");
@@ -308,8 +323,9 @@ RadiationM1::RadiationM1(MeshBlockPack *ppack, ParameterInput *pin)
   Kokkos::realloc(uflx.x2f, nmb, nvarstot, ncells3, ncells2+1, ncells1);
   Kokkos::realloc(uflx.x3f, nmb, nvarstot, ncells3+1, ncells2, ncells1);
 
-  // allocate Eddington factor
+  // allocate Eddington factor and closure flux factor (same ghost extents)
   Kokkos::realloc(chi, nmb, nspecies, ncells3, ncells2, ncells1);
+  Kokkos::realloc(xi, nmb, nspecies, ncells3, ncells2, ncells1);
 
   // allocate opacities
   Kokkos::realloc(eta_0, nmb, nspecies, ncells3, ncells2, ncells1);
