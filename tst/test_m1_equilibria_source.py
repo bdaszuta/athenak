@@ -15,7 +15,11 @@ def test_equilibrium_interface_is_backend_neutral():
     assert "bool equilibrium_available(const RadiationM1OpacityType opacity_type)" in source
     assert "bool equilibrium_densities(const RadiationM1OpacityType opacity_type," in source
     assert "constexpr int equilibrium_nspecies = 4;" in source
-    assert "weakrates" not in source
+    assert "static_assert(M1_TOTAL_NUM_SPECIES == equilibrium_nspecies," in source
+    # Backends added on other branches extend the availability predicate and the dispatch in
+    # this same header, so this test must not require the absence of their names. What it can
+    # require is that the interface, not a consumer, owns the selection.
+    assert "opacity_type == BnsNurates" in source
 
 
 def test_bns_nurates_equilibrium_physics_lives_in_the_interface():
