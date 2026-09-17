@@ -300,10 +300,13 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
         Real neq_0_loc[M1_TOTAL_NUM_SPECIES]{};
         Real neq_1_loc[M1_TOTAL_NUM_SPECIES]{};
 
-        eta_0_loc[0] = raw.eta_0[weakrates::kNuE];
-        eta_0_loc[1] = raw.eta_0[weakrates::kAntiNuE];
-        eta_1_loc[0] = raw.eta_1[weakrates::kNuE];
-        eta_1_loc[1] = raw.eta_1[weakrates::kAntiNuE];
+        // The electronic emissivity is not taken from the raw coefficients: the
+        // Kirchhoff rebuild below overwrites these two slots for every species.
+        // Kept commented out as reference.
+        // eta_0_loc[0] = raw.eta_0[weakrates::kNuE];
+        // eta_0_loc[1] = raw.eta_0[weakrates::kAntiNuE];
+        // eta_1_loc[0] = raw.eta_1[weakrates::kNuE];
+        // eta_1_loc[1] = raw.eta_1[weakrates::kAntiNuE];
         abs_0_loc[0] = raw.abs_0[weakrates::kNuE];
         abs_0_loc[1] = raw.abs_0[weakrates::kAntiNuE];
         abs_1_loc[0] = raw.abs_1[weakrates::kNuE];
@@ -326,19 +329,42 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
           neq_1_loc[s] = heavy_split*local_eq.energy[weakrates::kNuX];
         }
 
-        // Electron-flavor raw absorption contains only charged-current processes.
-        // Represent pair, plasmon, and bremsstrahlung emission by an additive thermal
-        // opacity at the local blackbody so those channels survive the Kirchhoff update.
-        abs_0_loc[0] += (neq_0_loc[0] > 0.0)
-                          ? raw.eta_0_non_cc[weakrates::kNuE]/neq_0_loc[0] : 0.0;
-        abs_0_loc[1] += (neq_0_loc[1] > 0.0)
-                          ? raw.eta_0_non_cc[weakrates::kAntiNuE]/neq_0_loc[1] : 0.0;
-        abs_1_loc[0] += (neq_1_loc[0] > 0.0)
-                          ? raw.eta_1_non_cc[weakrates::kNuE]/neq_1_loc[0] : 0.0;
-        abs_1_loc[1] += (neq_1_loc[1] > 0.0)
-                          ? raw.eta_1_non_cc[weakrates::kAntiNuE]/neq_1_loc[1] : 0.0;
+        // Kirchhoff closure. The grey scheme carries one emissivity/opacity pair per
+        // channel, so one member of the pair is the microscopic input and the other
+        // follows from Kirchhoff's law at the local equilibrium. Which member is the
+        // input depends on the channel kind:
+        //
+        //   charged-current (nue, anua): the microphysics supplies the opacity
+        //     (Bruenn-85 absorption); the non-LTE factor below scales that opacity and
+        //     the emissivity follows from eta = kappa * n_eq at the partial-equilibrium
+        //     state;
+        //   emission-only (the heavy-lepton channel, which has no charged current at
+        //     all): the microphysics supplies the emissivity; the factor scales that
+        //     emissivity and the opacity follows from kappa = eta / n_eq.
+        //
+        // Pair, plasmon and bremsstrahlung emission for nue/anua has no charged-current
+        // counterpart, so this closure cannot recover it from the opacity and it is not
+        // carried here: adding its emissivity over n_eq to the opacity would install an
+        // emission rate as an absorption length, and the transport operator would then
+        // trap electron neutrinos and antineutrinos at that rate.
+        //
+        // The absorptive fold is kept commented out as the reference for what was
+        // rejected: it is the block that would have to be restored to carry those
+        // channels through Kirchhoff.
+        // abs_0_loc[0] += (neq_0_loc[0] > 0.0)
+        //                   ? raw.eta_0_non_cc[weakrates::kNuE]/neq_0_loc[0] : 0.0;
+        // abs_0_loc[1] += (neq_0_loc[1] > 0.0)
+        //                   ? raw.eta_0_non_cc[weakrates::kAntiNuE]/neq_0_loc[1] : 0.0;
+        // abs_1_loc[0] += (neq_1_loc[0] > 0.0)
+        //                   ? raw.eta_1_non_cc[weakrates::kNuE]/neq_1_loc[0] : 0.0;
+        // abs_1_loc[1] += (neq_1_loc[1] > 0.0)
+        //                   ? raw.eta_1_non_cc[weakrates::kAntiNuE]/neq_1_loc[1] : 0.0;
 
-        // Apply the non-LTE E_nu^2 correction from the actual M1 mean energy.
+        // Apply the non-LTE E_nu^2 correction from the actual M1 mean energy. The factor
+        // is referenced to the local matter equilibrium, which is the state every raw
+        // coefficient above was evaluated at. The Kirchhoff closure further down is a
+        // separate operation: it sets the emissivity level at the partial-equilibrium
+        // state the step relaxes toward, and does not re-reference the factor.
         for (int s = 0; s < nspecies_; ++s) {
           Real corr = 1.0;
           if (nudens_0[s] > 0.0 && nudens_1[s] > 0.0 && neq_0_loc[s] > 0.0 &&
@@ -353,8 +379,14 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
           }
           scat_1_loc[s] *= corr;
           if (s < 2) {
+            // Charged-current kind: the opacity is the microscopic input.
             abs_0_loc[s] *= corr;
             abs_1_loc[s] *= corr;
+          } else {
+            // Emission-only kind: the emissivity is the microscopic input, and the
+            // rebuild below derives the opacity from it.
+            eta_0_loc[s] *= corr;
+            eta_1_loc[s] *= corr;
           }
         }
 

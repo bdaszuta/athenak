@@ -59,8 +59,12 @@ static_assert(std::is_trivially_copyable<State>::value, "State must be device-co
 struct RawCoefficients {
   Real eta_0[kNumRateSpecies];         // cm^-3 s^-1
   Real eta_1[kNumRateSpecies];         // erg cm^-3 s^-1
-  Real eta_0_non_cc[kNumRateSpecies];  // non-charged-current part, cm^-3 s^-1
-  Real eta_1_non_cc[kNumRateSpecies];  // non-charged-current part, erg cm^-3 s^-1
+  // Non-charged-current emission (pair, plasmon, bremsstrahlung), cm^-3 s^-1 and
+  // erg cm^-3 s^-1. Reported for diagnostics only: the grey closure derives the
+  // electronic emissivity from the charged-current opacity by Kirchhoff's law and
+  // consumes no entry of this family.
+  Real eta_0_non_cc[kNumRateSpecies];
+  Real eta_1_non_cc[kNumRateSpecies];
   Real abs_0[kNumRateSpecies];         // cm^-1
   Real abs_1[kNumRateSpecies];         // cm^-1
   Real scat_1[kNumRateSpecies];        // cm^-1
