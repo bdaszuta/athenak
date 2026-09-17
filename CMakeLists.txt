@@ -79,14 +79,18 @@ else()
   set(OPENMP_PARALLEL_ENABLED 0)
 endif()
 
-# set nurates macro (true/false)
+# Both neutrino opacity backends use nue, anue, nux, and anux transport groups. The compiled
+# capacity is fixed at four groups for every build and is independent of the optional
+# bns_nurates dependency, so every neutrino backend shares one state layout. The active group
+# count follows the selected opacity backend at run time (see RadiationM1::nspecies).
+set(M1_TOTAL_NUM_SPECIES 4)
+
+# Set bns_nurates support.
 if(Athena_ENABLE_NURATES)
   set(ENABLE_NURATES 1)
-  set(M1_TOTAL_NUM_SPECIES 4)
   message(STATUS "Compiling with bns-nurates")
 else()
   set(ENABLE_NURATES 0)
-  set(M1_TOTAL_NUM_SPECIES 1)
 endif ()
 
 #set user problem generator flag

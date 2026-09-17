@@ -16,6 +16,7 @@
 #include "globals.hpp"
 #include "mesh/mesh.hpp"
 #include "parameter_input.hpp"
+#include "radiation_m1/radiation_m1_equilibria.hpp"
 #include "units/units.hpp"
 
 #if ENABLE_NURATES
@@ -48,8 +49,6 @@ RadiationM1::RadiationM1(MeshBlockPack *ppack, ParameterInput *pin)
     // @TODO phydro are only partially implemented
     exit(EXIT_FAILURE);
   }
-
-  nspecies = M1_TOTAL_NUM_SPECIES;
 
   params.gr_sources = pin->GetOrAddBoolean("radiation_m1", "gr_sources", true);
   params.matter_sources = pin->GetOrAddBoolean("radiation_m1", "matter_sources", true);
@@ -295,6 +294,11 @@ RadiationM1::RadiationM1(MeshBlockPack *ppack, ParameterInput *pin)
     exit(EXIT_FAILURE);
   }
 
+  // Active transport-group count. The compiled capacity M1_TOTAL_NUM_SPECIES is four groups
+  // for every build; a backend with four-group equilibrium densities uses all of them and
+  // every other backend evolves a single group.
+  nspecies = radiationm1::equilibrium_available(params.opacity_type) ? M1_TOTAL_NUM_SPECIES : 1;
+
   // Total number of MeshBlocks on this rank to be used in array dimensioning
   int nmb = std::max((ppack->nmb_thispack), (ppack->pmesh->nmb_maxperrank));
 
@@ -337,8 +341,6 @@ RadiationM1::RadiationM1(MeshBlockPack *ppack, ParameterInput *pin)
   // radiation mask
   Kokkos::realloc(radiation_mask, nmb, ncells3, ncells2, ncells1);
   Kokkos::deep_copy(radiation_mask, false);
-
-  nspecies = M1_TOTAL_NUM_SPECIES;
 
   // allocate fake fluid quantities if not using MHD
   if (!ismhd) {
