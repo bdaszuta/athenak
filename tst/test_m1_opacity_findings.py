@@ -33,6 +33,15 @@ def main():
         subprocess.run([str(exe), str(root / "inputs/tests/rad_m1_singlezone.athinput"),
                         str(root / "tst/inputs/tables/SFHo_reduced.athtab")],
                        cwd=tmp, check=True)
+        # Fixed MHD skips C2P, so NuRATES must retain pressure-based temperature recovery.
+        fixed = tmp / "fixed.athinput"
+        text = (root / "inputs/tests/rad_m1_singlezone.athinput").read_text()
+        text = text.replace("<mhd>", "<mhd>\nfixed = true")
+        fixed.write_text(text, encoding="ascii")
+        subprocess.run([str(build / "src/athena"), "-i", str(fixed),
+                        f"mhd/table={root / 'tst/inputs/tables/SFHo_reduced.athtab'}",
+                        "time/nlim=1"], cwd=tmp, check=True)
+        print("PASS fixed-MHD opacity temperature fallback")
         # CLI overrides require keys to exist in the deck before constructors.
         # Add startup-only keys to a temporary copy, leaving shipped inputs alone.
         beam = tmp / "quadrature.athinput"

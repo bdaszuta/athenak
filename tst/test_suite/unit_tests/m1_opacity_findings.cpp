@@ -47,15 +47,20 @@ int main(int argc, char **argv) {
         Primitive::EOSCompOSE<Primitive::NormalLogs>, Primitive::ResetFloor> *>(
         pack->pdyngr);
     if (hyd == nullptr) return 2;
+    // Reproduce Driver initialization: full C2P publishes w0 and its auxiliary
+    // temperature.
+    hyd->ConToPrim(nullptr, 0);
     auto &eos = hyd->eos.ps.GetEOSMutable();
     const auto cu = eos.GetCodeUnitSystem();
     const auto eu = eos.GetEOSUnitSystem();
     const auto nu = Primitive::MakeNGS();
     const int i = mesh.mb_indcs.is;
     const auto wh = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), pack->pmhd->w0);
+    const auto th = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(),
+                                                        hyd->temperature);
     Real nb = wh(0, IDN, 0, 0, i) / eos.GetBaryonMass();
     Real y = wh(0, IYF, 0, 0, i);
-    Real temp = eos.GetTemperatureFromP(nb, wh(0, IPR, 0, 0, i), &y);
+    Real temp = th(0, 0, 0, 0, i);
     Real yp = eos.GetProtonFraction(nb, temp, &y);
     Real yn = eos.GetNeutronFraction(nb, temp, &y);
     Real mun = eos.GetBaryonChemicalPotential(nb, temp, &y);
