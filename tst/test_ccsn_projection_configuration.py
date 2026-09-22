@@ -306,3 +306,37 @@ def test_projection_failure_line_format_matches_its_arguments():
     assert len(conversions) == len(arguments)
     assert "" not in [argument.strip() for argument in arguments]
     assert format_string.count("\\n") == 1
+
+
+def test_ccsn_cell_centered_temperature_state_and_entropy_failure_line():
+    source = (ROOT / "src/pgen/ccsn.cpp").read_text(encoding="utf-8")
+    history = source.split("static void HistoryMaxT", 1)[1].split(
+        "//! \\fn History", 1)[0]
+    bounce = source.split("static void BounceEntropyImpl", 1)[1].split(
+        "//! \\fn DeleptonizationImpl", 1)[0]
+    deleptonization = source.split("void DeleptonizationImpl", 1)[1].split(
+        "//! \\fn Deleptonization", 1)[0]
+    projection = source.split("static bool ConservativeM1ProjectionImpl", 1)[1].split(
+        "// Per-cycle bounce check", 1)[0]
+
+    for cell_centered_path in (history, bounce, deleptonization, projection):
+        assert "GetTemperatureFromP" not in cell_centered_path
+    assert "temperature_(m, 0, k, j, i)" in history
+    assert "temperature_(m, 0, k, j, i)" in bounce
+    assert "Real T_old = temperature_(m, 0, k, j, i);" in deleptonization
+    assert "temperature_(m, 0, k, j, i) = T_new;" in deleptonization
+    assert "initial_prim[PTM] = temperature(m, 0, k, j, i);" in projection
+
+    call_start = deleptonization.index("Kokkos::printf")
+    call = deleptonization[call_start : deleptonization.index(");", call_start) + 2]
+    format_string, arguments = printf_arguments(call)
+    conversions = re.findall(
+        r"%[-+ #0]*[\d.*]*(?:hh|h|ll|l|j|z|t|L)?[diouxXeEfFgGaAcspn]",
+        format_string)
+    assert len(conversions) == len(arguments)
+    for field in ("rank=", "gid=", "cell=", "rho=", "rho_cgs=", "n=", "P=",
+                  "Ye_old=", "Ye_new=", "dYe=", "T_old=", "T_new=", "Tmin=",
+                  "Tmax=", "mu_nu=", "E_nu_avg=", "s_target=", "s_Tmin=",
+                  "s_Tmax=", "update_entropy=", "correction_active="):
+        assert field in format_string, field
+    assert format_string.count("\\n") == 1

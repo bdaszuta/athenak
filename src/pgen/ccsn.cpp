@@ -181,11 +181,7 @@ static void HistoryMaxT(Mesh *pm, Real &temp_max) {
       dynamic_cast<dyngr::DynGRMHDPS<EOSPolicy, ErrorPolicy> *>(pmbp->pdyngr);
   if (pdg == nullptr)
     return;
-  auto eos = pdg->eos.ps.GetEOS();
-  Real mb = eos.GetBaryonMass();
-  int nscal = pmbp->pmhd->nscalars;
-  int nmhd = pmbp->pmhd->nmhd;
-
+  auto &temperature_ = pdg->temperature;
   auto &w0_ = pm->pmb_pack->pmhd->w0;
   auto &indcs = pm->pmb_pack->pmesh->mb_indcs;
   int is = indcs.is, nx1 = indcs.nx1;
@@ -208,12 +204,7 @@ static void HistoryMaxT(Mesh *pm, Real &temp_max) {
         j += js;
         Real rho = w0_(m, IDN, k, j, i);
         if (rho > 0.0) {
-          Real Y[MAX_SPECIES] = {0.};
-          if (nscal >= 1)
-            Y[0] = w0_(m, nmhd, k, j, i);
-          Real n = rho / mb;
-          Real p = w0_(m, IPR, k, j, i);
-          mb_temp = fmax(mb_temp, eos.GetTemperatureFromP(n, p, Y));
+          mb_temp = fmax(mb_temp, temperature_(m, 0, k, j, i));
         }
       },
       Kokkos::Max<Real>(tmax));
@@ -880,6 +871,7 @@ static void BounceEntropyImpl(MeshBlockPack *pmbp, bool &at_bounce,
     return;
 
   auto &eos_ = pdyngr->eos.ps.GetEOS();
+  auto &temperature_ = pdyngr->temperature;
   auto &w0_ = pmbp->pmhd->w0;
   int nmhd = pmbp->pmhd->nmhd;
   auto &size = pmbp->pmb->mb_size;
@@ -919,11 +911,10 @@ static void BounceEntropyImpl(MeshBlockPack *pmbp, bool &at_bounce,
           return;
 
         Real n = rho / mb;
-        Real p = w0_(m, IPR, k, j, i);
         Real Ye = w0_(m, nmhd, k, j, i);
         Real Y[MAX_SPECIES] = {0.};
         Y[0] = Ye;
-        Real T = eos_.GetTemperatureFromP(n, p, Y);
+        Real T = temperature_(m, 0, k, j, i);
         Real spb = eos_.GetEntropyPerBaryon(n, T, Y);
         if (spb > spb_gate)
           lflag = 1;
@@ -947,6 +938,7 @@ void DeleptonizationImpl(Mesh *pm) {
     return;
 
   auto &eos_ = pdyngr->eos.ps.GetEOS();
+  auto &temperature_ = pdyngr->temperature;
   auto &w0_ = pmbp->pmhd->w0;
   int nmhd = pmbp->pmhd->nmhd;
 
@@ -958,6 +950,10 @@ void DeleptonizationImpl(Mesh *pm) {
 
   const Real mb = eos_.GetBaryonMass();
   const Real rho_min = eos_.GetMinimumDensity() * mb;
+  const Real T_min = eos_.GetMinimumTemperature();
+  const Real T_max = eos_.GetMaximumTemperature();
+  const int rank = global_variable::my_rank;
+  const int gid_start = pmbp->gids;
 
   const Real E_nu_avg = delept_E_nu_avg;
   const Real rho_trap = delept_rho_trap;
@@ -983,10 +979,10 @@ void DeleptonizationImpl(Mesh *pm) {
         Real p = w0_(m, IPR, k, j, i);
         Real Ye_old = w0_(m, nmhd, k, j, i);
 
-        // Get temperature before Ye change
+        // Use the temperature published with this cell-centered C2P state.
         Real Y_old[MAX_SPECIES] = {0.};
         Y_old[0] = Ye_old;
-        Real T_old = eos_.GetTemperatureFromP(n, p, Y_old);
+        Real T_old = temperature_(m, 0, k, j, i);
 
         // Compute target Ye
         Real rho_cgs = rho * rho_code_to_cgs;
@@ -1029,11 +1025,25 @@ void DeleptonizationImpl(Mesh *pm) {
         // Reject an inherited unbracketed extrapolation before a new EOS lookup;
         // do not clamp entropy or change the shared inverse-temperature policy.
         if (!Kokkos::isfinite(T_new) || !(T_new > 0.0) ||
-            T_new < eos_.GetMinimumTemperature() ||
-            T_new > eos_.GetMaximumTemperature()) {
+            T_new < T_min || T_new > T_max) {
+          const Real s_at_T_min = eos_.GetEntropyPerBaryon(n, T_min, Y_new);
+          const Real s_at_T_max = eos_.GetEntropyPerBaryon(n, T_max, Y_new);
+          Kokkos::printf(
+              "CCSN entropy inversion FAIL rank=%d gid=%d cell=(%d,%d,%d)"
+              " rho=% .17e rho_cgs=% .17e n=% .17e P=% .17e"
+              " Ye_old=% .17e Ye_new=% .17e dYe=% .17e"
+              " T_old=% .17e T_new=% .17e Tmin=% .17e Tmax=% .17e"
+              " mu_nu=% .17e E_nu_avg=% .17e"
+              " s_target=% .17e s_Tmin=% .17e s_Tmax=% .17e"
+              " update_entropy=%d correction_active=%d\n",
+              rank, gid_start + m, k, j, i, rho, rho_cgs, n, p, Ye_old,
+              Ye_new, delta_Ye, T_old, T_new, T_min, T_max, mu_nu, E_nu_avg,
+              s_per_baryon, s_at_T_min, s_at_T_max, do_entropy ? 1 : 0,
+              (do_entropy && mu_nu > E_nu_avg && rho < rho_trap) ? 1 : 0);
           Kokkos::abort("CCSN entropy inversion failed after deleptonization");
         }
         w0_(m, IPR, k, j, i) = eos_.GetPressure(n, T_new, Y_new);
+        temperature_(m, 0, k, j, i) = T_new;
       });
 
   // The native moving, magnetized GRMHD P2C includes momentum and magnetic terms.
@@ -1215,8 +1225,7 @@ static bool ConservativeM1ProjectionImpl(MeshBlockPack *pmbp) {
         for (int n = 0; n < nscalars; ++n) {
           initial_prim[PYF + n] = mhd_w0(m, nmhd + n, k, j, i);
         }
-        initial_prim[PTM] = ps_.GetEOS().GetTemperatureFromP(
-            initial_prim[PRH], initial_prim[PPR], &initial_prim[PYF]);
+        initial_prim[PTM] = temperature(m, 0, k, j, i);
         if (initial_prim[PTM] < eql_t_min)
           return;
 
