@@ -592,10 +592,21 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
                 }
               }
 
-              // Boost back to the lab frame
+              // Boost back to the lab frame.  A nonfinite analytic state is not
+              // repaired into a charged matter interaction: retain the physicalized
+              // predictor and disable the complete source step for this cell.
               AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Fnew_d{};
               Real Enew = calc_J_from_rT(rT_dd, n_u);
               calc_H_from_rT(rT_dd, n_u, gamma_ud, Fnew_d);
+              bool analytic_state_is_finite =
+                  radiation_state_is_finite(g_uu, Enew, Fnew_d);
+              if (!analytic_state_is_finite) {
+                source_step_is_finite = false;
+                Enew = Estar;
+                for (int a = 0; a < 4; ++a) {
+                  Fnew_d(a) = Fstar_d(a);
+                }
+              }
               apply_floor(g_uu, Enew, Fnew_d, params_);
 
               const Real E_analytic = Enew;
@@ -605,14 +616,17 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
               }
               const Real chi_analytic = chi_(m, nuidx, k, j, i);
 
-              const SrcSignal src_signal = source_update(
-                  BrentFunc_, HybridsjFunc_, beta_dt, adm.alpha(m, k, j, i),
-                  g_dd, g_uu, n_d, n_u, gamma_ud, u_d, u_u, v_d, v_u, proj_ud,
-                  w_lorentz, Estar, Fstar_d, Epred, Fpred_d,
-                  volform * eta_1_(m, nuidx, k, j, i),
-                  abs_1_(m, nuidx, k, j, i), scat_1_(m, nuidx, k, j, i),
-                  chi_(m, nuidx, k, j, i), Enew, Fnew_d, params_,
-                  params_.closure_type);
+              SrcSignal src_signal = SrcFail;
+              if (analytic_state_is_finite) {
+                src_signal = source_update(
+                    BrentFunc_, HybridsjFunc_, beta_dt, adm.alpha(m, k, j, i),
+                    g_dd, g_uu, n_d, n_u, gamma_ud, u_d, u_u, v_d, v_u,
+                    proj_ud, w_lorentz, Estar, Fstar_d, Epred, Fpred_d,
+                    volform * eta_1_(m, nuidx, k, j, i),
+                    abs_1_(m, nuidx, k, j, i), scat_1_(m, nuidx, k, j, i),
+                    chi_(m, nuidx, k, j, i), Enew, Fnew_d, params_,
+                    params_.closure_type);
+              }
               if (src_signal == SrcFail) {
                 Enew = E_analytic;
                 for (int a = 0; a < 4; ++a) {
@@ -837,14 +851,14 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
                    source_base[nuidx][M1_FY_IDX],
                    source_base[nuidx][M1_FZ_IDX], Fbase_d);
 
-          AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Ff_d{};
-          Real Ef = Ebase;
+          Real Ecandidate = Ebase;
+          AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Fcandidate_d{};
           for (int a = 0; a < 4; ++a) {
-            Ff_d(a) = Fbase_d(a);
+            Fcandidate_d(a) = Fbase_d(a);
           }
           if (apply_source_step) {
-            Ef = source_pred[nuidx][M1_E_IDX] +
-                 theta * DrEFN[nuidx][M1_E_IDX];
+            Ecandidate = source_pred[nuidx][M1_E_IDX] +
+                         theta * DrEFN[nuidx][M1_E_IDX];
             const Real Fxf = source_pred[nuidx][M1_FX_IDX] +
                              theta * DrEFN[nuidx][M1_FX_IDX];
             const Real Fyf = source_pred[nuidx][M1_FY_IDX] +
@@ -853,9 +867,14 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
                              theta * DrEFN[nuidx][M1_FZ_IDX];
             pack_F_d(adm.beta_u(m, 0, k, j, i),
                      adm.beta_u(m, 1, k, j, i),
-                     adm.beta_u(m, 2, k, j, i), Fxf, Fyf, Fzf, Ff_d);
-            apply_floor(g_uu, Ef, Ff_d, params_);
+                     adm.beta_u(m, 2, k, j, i), Fxf, Fyf, Fzf, Fcandidate_d);
+            apply_floor(g_uu, Ecandidate, Fcandidate_d, params_);
           }
+
+          Real Ef{}, dE_actual{};
+          AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Ff_d{}, dF_actual_d{};
+          select_source_candidate(apply_source_step, Ebase, Fbase_d, Ecandidate,
+                                  Fcandidate_d, Ef, Ff_d, dE_actual, dF_actual_d);
 
           AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> Pfinal_dd{};
           calc_closure(BrentFunc_, g_dd, g_uu, n_d, w_lorentz, u_u, v_d,
@@ -880,10 +899,9 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
             u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i) = Nf;
           }
 
-          const Real dE_actual = Ef - Ebase;
-          const Real dFx_actual = Ff_d(1) - Fbase_d(1);
-          const Real dFy_actual = Ff_d(2) - Fbase_d(2);
-          const Real dFz_actual = Ff_d(3) - Fbase_d(3);
+          const Real dFx_actual = dF_actual_d(1);
+          const Real dFy_actual = dF_actual_d(2);
+          const Real dFz_actual = dF_actual_d(3);
           if (params_.backreact && stage == 2 && (ismhd_)) {
             umhd0_(m, IEN, k, j, i) -= dE_actual;
             umhd0_(m, IM1, k, j, i) -= dFx_actual;

@@ -39,6 +39,9 @@ KOKKOS_INLINE_FUNCTION MathSignal BrentInitialize(Functor &&f, Real x_lower,
 
   Real f_lower = f(x_lower, args...);
   Real f_upper = f(x_upper, args...);
+  if (!Kokkos::isfinite(f_lower) || !Kokkos::isfinite(f_upper)) {
+    return LinalgEbadfunc;
+  }
 
   brent_state.a = x_lower;
   brent_state.b = x_upper;
@@ -79,6 +82,10 @@ KOKKOS_INLINE_FUNCTION MathSignal BrentIterate(Functor &&f, Real &x_lower,
   Real f_a = brent_state.f_a;
   Real f_b = brent_state.f_b;
   Real f_c = brent_state.f_c;
+  if (!Kokkos::isfinite(f_a) || !Kokkos::isfinite(f_b) ||
+      !Kokkos::isfinite(f_c)) {
+    return LinalgEbadfunc;
+  }
 
   if ((f_b < 0 && f_c < 0) || (f_b > 0 && f_c > 0)) {
     ac_equal = 1;
@@ -167,6 +174,9 @@ KOKKOS_INLINE_FUNCTION MathSignal BrentIterate(Functor &&f, Real &x_lower,
   }
 
   f_b = f(b, args...);
+  if (!Kokkos::isfinite(f_b)) {
+    return LinalgEbadfunc;
+  }
 
   brent_state.a = a;
   brent_state.b = b;

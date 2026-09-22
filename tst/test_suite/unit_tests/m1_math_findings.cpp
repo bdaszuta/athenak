@@ -5,6 +5,7 @@
 #include <limits>
 
 #include "radiation_m1/radiation_m1_calc_closure.hpp"
+#include "radiation_m1/radiation_m1_sources.hpp"
 
 using Metric = AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2>;
 using Vector = AthenaPointTensor<Real, TensorSymm::NONE, 4, 1>;
@@ -117,10 +118,12 @@ Real ClosureError(const int test) {
   }
   Real chi = test < 2 || test == 10 ? 1.0 : 2.0 / 3.0;
   Metric P{};
+  radiationm1::MathSignal closure_status = radiationm1::LinalgSuccess;
   if (solve) {
     radiationm1::BrentFunctor fn{};
-    radiationm1::calc_closure(fn, gd, gu, nd, W, u, vd, proj, E, fd, chi,
-                             P, params, radiationm1::Minerbo);
+    closure_status = radiationm1::calc_closure(
+        fn, gd, gu, nd, W, u, vd, proj, E, fd, chi, P, params,
+        radiationm1::Minerbo);
   } else {
     radiationm1::apply_closure(gd, gu, nd, W, u, vd, proj, E, fd, chi, P, params);
   }
@@ -150,6 +153,7 @@ Real ClosureError(const int test) {
     }
   }
   if (solve) {
+    if (closure_status != radiationm1::LinalgSuccess) return 1.0;
     // Check the published tensor against the defining comoving flux relation.
     Metric T{};
     Vector H{};
@@ -236,11 +240,312 @@ Real NewtonFallbackError() {
   return error;
 }
 
+// A zero-iteration Brent solve must return a bounded closure without claiming convergence.
+KOKKOS_INLINE_FUNCTION
+Real ClosureExhaustionStatusError() {
+  Metric gd{}, gu{};
+  gd(0, 0) = gu(0, 0) = -1;
+  for (int a = 1; a < 4; ++a) gd(a, a) = gu(a, a) = 1;
+
+  Vector nd{}, vu{}, vd{}, u{}, ud{}, fd{};
+  nd(0) = -1;
+  vu(1) = 1.0 / 2.0;
+  const Real W = 1.0 / Kokkos::sqrt(1.0 - vu(1) * vu(1));
+  u(0) = W;
+  u(1) = W * vu(1);
+  tensor_contract(gd, u, ud);
+  tensor_contract(gd, vu, vd);
+  AthenaPointTensor<Real, TensorSymm::NONE, 4, 2> proj{};
+  radiationm1::calc_proj(ud, u, proj);
+
+  radiationm1::RadiationM1Params params{};
+  params.closure_solver = radiationm1::ClosureBrent;
+  params.closure_epsilon = kClosureTolerance;
+  params.closure_maxiter = 0;
+  params.rad_E_floor = 1e-30;
+  params.rad_eps = 1e-14;
+
+  radiationm1::BrentFunctor fn{};
+  Real chi{}, xi{};
+  Metric P{};
+  const radiationm1::MathSignal status = radiationm1::calc_closure(
+      fn, gd, gu, nd, W, u, vd, proj, 1, fd, chi, xi, P, params,
+      radiationm1::Minerbo);
+  if (status != radiationm1::LinalgContinue || !Kokkos::isfinite(chi) ||
+      !Kokkos::isfinite(xi) || xi < 0.0 || xi > 1.0) {
+    return 1.0;
+  }
+  const Real f_selected = fn(xi, gd, gu, nd, W, u, vd, proj, 1, fd, params,
+                             radiationm1::Minerbo);
+  const Real f_lower = fn(0.0, gd, gu, nd, W, u, vd, proj, 1, fd, params,
+                          radiationm1::Minerbo);
+  const Real f_upper = fn(1.0, gd, gu, nd, W, u, vd, proj, 1, fd, params,
+                          radiationm1::Minerbo);
+  if (Kokkos::fabs(f_selected) >
+      Kokkos::fmin(Kokkos::fabs(f_lower), Kokkos::fabs(f_upper))) {
+    return 1.0;
+  }
+  for (int a = 0; a < 4; ++a) {
+    for (int b = a; b < 4; ++b) {
+      if (!Kokkos::isfinite(P(a, b))) return 1.0;
+    }
+  }
+
+  // Static zero flux is an exact xi=0 endpoint root, even with no iterations.
+  Vector u_static{}, ud_static{}, v_static{};
+  u_static(0) = 1.0;
+  ud_static(0) = -1.0;
+  AthenaPointTensor<Real, TensorSymm::NONE, 4, 2> proj_static{};
+  radiationm1::calc_proj(ud_static, u_static, proj_static);
+  chi = -1.0;
+  xi = -1.0;
+  const radiationm1::MathSignal endpoint_status = radiationm1::calc_closure(
+      fn, gd, gu, nd, 1.0, u_static, v_static, proj_static, 1, fd, chi, xi, P,
+      params, radiationm1::Minerbo);
+  return endpoint_status == radiationm1::LinalgSuccess && xi == 0.0 &&
+                 chi == 1.0 / 3.0
+             ? 0.0
+             : 1.0;
+}
+
+// Check the source residual's active-branch derivative for a dogleg trial with E < 0.
+KOKKOS_INLINE_FUNCTION
+Real NegativeTrialJacobianError() {
+  Metric gd{}, gu{};
+  gd(0, 0) = gu(0, 0) = -1;
+  for (int a = 1; a < 4; ++a) gd(a, a) = gu(a, a) = 1;
+
+  Vector nd{}, nu{}, ud{}, u{}, vd{}, vu{}, fstar{};
+  nd(0) = ud(0) = -1;
+  nu(0) = u(0) = 1;
+  AthenaPointTensor<Real, TensorSymm::NONE, 4, 2> gamma{}, proj{};
+  for (int a = 1; a < 4; ++a) gamma(a, a) = proj(a, a) = 1;
+
+  radiationm1::RadiationM1Params params{};
+  params.closure_type = radiationm1::Eddington;
+  params.closure_solver = radiationm1::ClosureBrent;
+  params.closure_epsilon = kClosureTolerance;
+  params.closure_maxiter = 64;
+  params.rad_E_floor = 1e-12;
+  params.rad_eps = 1e-14;
+  radiationm1::SrcParams src_params(1.0 / 8.0, 1.0, gd, gu, nd, nu, gamma, ud, u,
+                                    vd, vu, proj, 1.0, 1.0, fstar, 1.0 / 3.0,
+                                    1.0, 2.0, 3.0);
+
+  radiationm1::BrentFunctor brent{};
+  radiationm1::HybridsjFunctor residual{};
+  Real x[4] = {-1.0 / 2.0, 0.0, 0.0, 0.0};
+  Real f[4]{}, jac[4][4]{}, fp[4]{}, fm[4]{}, scratch[4][4]{};
+  if (residual(x, f, jac, brent, src_params, params) != radiationm1::LinalgSuccess) {
+    return 1.0;
+  }
+
+  // Binary-exact perturbations stay on x[0] < 0, where the residual is affine.
+  const Real eps = 1.0 / 8.0;
+  x[0] += eps;
+  if (residual(x, fp, scratch, brent, src_params, params) !=
+      radiationm1::LinalgSuccess) {
+    return 1.0;
+  }
+  x[0] -= 2.0 * eps;
+  if (residual(x, fm, scratch, brent, src_params, params) !=
+      radiationm1::LinalgSuccess) {
+    return 1.0;
+  }
+
+  Real error = 0.0;
+  for (int a = 0; a < 4; ++a) {
+    error += Kokkos::fabs(jac[a][0] - (fp[a] - fm[a]) / (2.0 * eps));
+  }
+
+  x[0] = std::numeric_limits<Real>::quiet_NaN();
+  if (residual(x, f, jac, brent, src_params, params) != radiationm1::LinalgEbadfunc) {
+    return 1.0;
+  }
+  return error;
+}
+
+class NoBracketFunctor {
+ public:
+  KOKKOS_INLINE_FUNCTION
+  Real operator()(const Real x) const { return x * x + 1.0; }
+};
+
+class BracketThenNanFunctor {
+ public:
+  KOKKOS_INLINE_FUNCTION
+  Real operator()(const Real x) const {
+    if (x == 0.0) return -1.0;
+    if (x == 1.0) return 1.0;
+    return std::numeric_limits<Real>::quiet_NaN();
+  }
+};
+
+// Brent must distinguish an absent bracket and a nonfinite trial evaluation.
+KOKKOS_INLINE_FUNCTION
+Real BrentFailureStatusError() {
+  radiationm1::BrentState state{};
+  Real root{};
+  NoBracketFunctor no_bracket{};
+  if (radiationm1::BrentInitialize(no_bracket, 0.0, 1.0, root, state) !=
+      radiationm1::LinalgEinval) {
+    return 1.0;
+  }
+  if (!Kokkos::isfinite(state.f_a) || !Kokkos::isfinite(state.f_b)) return 1.0;
+
+  state = radiationm1::BrentState{};
+  BracketThenNanFunctor bad_trial{};
+  if (radiationm1::BrentInitialize(bad_trial, 0.0, 1.0, root, state) !=
+      radiationm1::LinalgSuccess) {
+    return 1.0;
+  }
+  Real x_lo{}, x_hi{};
+  return radiationm1::BrentIterate(bad_trial, x_lo, x_hi, root, state) ==
+                 radiationm1::LinalgEbadfunc
+             ? 0.0
+             : 1.0;
+}
+
+// The configured-closure failure must select Eddington explicitly; if both
+// nonlinear attempts fail, the caller's analytic candidate remains intact.
+KOKKOS_INLINE_FUNCTION
+Real SourceFallbackError() {
+  Metric gd{}, gu{};
+  gd(0, 0) = gu(0, 0) = -1;
+  for (int a = 1; a < 4; ++a) gd(a, a) = gu(a, a) = 1;
+
+  Vector nd{}, nu{}, ud{}, u{}, vd{}, vu{}, fstar{};
+  nd(0) = -1;
+  nu(0) = 1;
+  vu(1) = 1.0 / 2.0;
+  const Real W = 1.0 / Kokkos::sqrt(1.0 - vu(1) * vu(1));
+  u(0) = W;
+  u(1) = W * vu(1);
+  tensor_contract(gd, u, ud);
+  tensor_contract(gd, vu, vd);
+  AthenaPointTensor<Real, TensorSymm::NONE, 4, 2> gamma{}, proj{};
+  for (int a = 1; a < 4; ++a) gamma(a, a) = 1;
+  radiationm1::calc_proj(ud, u, proj);
+
+  radiationm1::RadiationM1Params params{};
+  params.closure_type = radiationm1::Minerbo;
+  params.closure_solver = radiationm1::ClosureBrent;
+  params.closure_epsilon = kClosureTolerance;
+  params.closure_maxiter = 0;
+  params.rad_E_floor = 1e-12;
+  params.rad_eps = 1e-14;
+  params.source_thin_limit = 1.0;
+  params.source_thick_limit = -1.0;
+  params.source_scat_limit = -1.0;
+  params.source_epsabs = 1e-12;
+  params.source_epsrel = 1e-12;
+  params.source_maxiter = 8;
+
+  radiationm1::BrentFunctor brent{};
+  radiationm1::HybridsjFunctor hybridsj{};
+  Real chi = 1.0 / 3.0;
+  Real Enew = 1.0;
+  Vector Fnew{};
+  radiationm1::SrcSignal signal = radiationm1::source_update(
+      brent, hybridsj, 1.0 / 8.0, 1.0, gd, gu, nd, nu, gamma, ud, u, vd, vu,
+      proj, W, 1.0, fstar, 1.0, fstar, 1.0, 2.0, 3.0, chi, Enew, Fnew,
+      params, radiationm1::Minerbo);
+  if (signal != radiationm1::SrcEddington || !Kokkos::isfinite(Enew) ||
+      Enew == 1.0) {
+    return 1.0;
+  }
+
+  params.closure_maxiter = 64;
+  params.source_thin_limit = -1.0;
+  params.source_maxiter = 0;
+  Enew = 3.0 / 4.0;
+  signal = radiationm1::source_update(
+      brent, hybridsj, 1.0 / 8.0, 1.0, gd, gu, nd, nu, gamma, ud, u, vd, vu,
+      proj, W, 1.0, fstar, 1.0, fstar, 0.0, 0.0, 0.0, chi, Enew, Fnew,
+      params, radiationm1::Minerbo);
+  return signal == radiationm1::SrcFail && Enew == 3.0 / 4.0 ? 0.0 : 1.0;
+}
+
+// Publication and material exchange must use only the state selected for propagation.
+KOKKOS_INLINE_FUNCTION
+Real SourceAcceptanceError() {
+  Metric gu{};
+  gu(0, 0) = -1.0;
+  for (int a = 1; a < 4; ++a) gu(a, a) = 1.0;
+
+  Vector Fbase{}, Fcandidate{}, Ffinal{}, dF{};
+  Fbase(1) = 1.0 / 8.0;
+  Fcandidate(1) = 3.0 / 8.0;
+  Fcandidate(2) = 1.0 / 4.0;
+  Real Efinal{}, dE{};
+  radiationm1::select_source_candidate(false, 2.0, Fbase, 3.0, Fcandidate, Efinal,
+                                       Ffinal, dE, dF);
+  if (Efinal != 2.0 || dE != 0.0) return 1.0;
+  for (int a = 0; a < 4; ++a) {
+    if (Ffinal(a) != Fbase(a) || dF(a) != 0.0) return 1.0;
+  }
+
+  radiationm1::select_source_candidate(true, 2.0, Fbase, 3.0, Fcandidate, Efinal,
+                                       Ffinal, dE, dF);
+  if (Efinal != 3.0 || dE != 1.0 || dF(1) != 1.0 / 4.0 ||
+      dF(2) != 1.0 / 4.0) {
+    return 1.0;
+  }
+  if (!radiationm1::radiation_state_is_finite(gu, Efinal, Ffinal)) return 1.0;
+  Fcandidate(2) = std::numeric_limits<Real>::quiet_NaN();
+  return radiationm1::radiation_state_is_finite(gu, 3.0, Fcandidate) ? 1.0 : 0.0;
+}
+
+class RejectingHybridsjFunctor {
+ public:
+  KOKKOS_INLINE_FUNCTION
+  radiationm1::MathSignal operator()(const Real *, Real *, Real (*)[4]) const {
+    return radiationm1::LinalgEbadfunc;
+  }
+};
+
+class TrialRejectingHybridsjFunctor {
+ public:
+  KOKKOS_INLINE_FUNCTION
+  radiationm1::MathSignal operator()(const Real x[4], Real f[4], Real jac[4][4]) const {
+    if (x[0] != 0.0) return radiationm1::LinalgEbadfunc;
+    for (int a = 0; a < 4; ++a) {
+      f[a] = (a == 0) ? 1.0 : 0.0;
+      for (int b = 0; b < 4; ++b) jac[a][b] = (a == b) ? 1.0 : 0.0;
+    }
+    return radiationm1::LinalgSuccess;
+  }
+};
+
+// Function-evaluation failures must stop both initialization and trial processing.
+KOKKOS_INLINE_FUNCTION
+Real HybridsjFailureStatusError() {
+  radiationm1::HybridsjState state{};
+  radiationm1::HybridsjParams params{};
+  RejectingHybridsjFunctor reject_all{};
+  if (radiationm1::HybridsjInitialize(reject_all, state, params) !=
+      radiationm1::LinalgEbadfunc) {
+    return 1.0;
+  }
+
+  state = radiationm1::HybridsjState{};
+  params = radiationm1::HybridsjParams{};
+  TrialRejectingHybridsjFunctor reject_trial{};
+  if (radiationm1::HybridsjInitialize(reject_trial, state, params) !=
+      radiationm1::LinalgSuccess) {
+    return 1.0;
+  }
+  return radiationm1::HybridsjIterate(reject_trial, state, params) ==
+                 radiationm1::LinalgEbadfunc
+             ? 0.0
+             : 1.0;
+}
+
 int main(int argc, char **argv) {
   Kokkos::initialize(argc, argv);
   int failed = 0;
   {
-    constexpr int ntest = 21;
+    constexpr int ntest = 27;
     const Real expected[ntest] = {1.0 / 3.0, 21.0 / 5.0, 24.0 / 5.0,
                                   1.0 / 2.0, 1.0 / 2.0, 1.0};
     const char *names[ntest] = {
@@ -250,7 +555,10 @@ int main(int argc, char **argv) {
         "zero-moving-brent", "zero-moving-newton", "zero-shifted-brent",
         "zero-shifted-newton", "floor-shifted-brent", "floor-shifted-newton",
         "nonzero-thin", "nonzero-blend", "zero-source-energy-column",
-        "nonzero-source-energy-column", "newton-fallback-brent"};
+        "nonzero-source-energy-column", "newton-fallback-brent",
+        "brent-exhaustion-status", "negative-trial-jacobian",
+        "brent-failure-status", "source-fallback-status",
+        "source-acceptance", "hybridsj-failure-status"};
     // Explicit host evaluation remains distinct from the device-kernel result.
     Real host[ntest];
     for (int n = 0; n < ntest; ++n) {
@@ -258,8 +566,20 @@ int main(int argc, char **argv) {
         host[n] = Evaluate(n);
       } else if (n < 20) {
         host[n] = ClosureError(n - 6);
-      } else {
+      } else if (n == 20) {
         host[n] = NewtonFallbackError();
+      } else if (n == 21) {
+        host[n] = ClosureExhaustionStatusError();
+      } else if (n == 22) {
+        host[n] = NegativeTrialJacobianError();
+      } else if (n == 23) {
+        host[n] = BrentFailureStatusError();
+      } else if (n == 24) {
+        host[n] = SourceFallbackError();
+      } else if (n == 25) {
+        host[n] = SourceAcceptanceError();
+      } else {
+        host[n] = HybridsjFailureStatusError();
       }
     }
     Kokkos::View<Real *> device("m1_findings", ntest);
@@ -269,8 +589,20 @@ int main(int argc, char **argv) {
                             device(n) = Evaluate(n);
                           } else if (n < 20) {
                             device(n) = ClosureError(n - 6);
-                          } else {
+                          } else if (n == 20) {
                             device(n) = NewtonFallbackError();
+                          } else if (n == 21) {
+                            device(n) = ClosureExhaustionStatusError();
+                          } else if (n == 22) {
+                            device(n) = NegativeTrialJacobianError();
+                          } else if (n == 23) {
+                            device(n) = BrentFailureStatusError();
+                          } else if (n == 24) {
+                            device(n) = SourceFallbackError();
+                          } else if (n == 25) {
+                            device(n) = SourceAcceptanceError();
+                          } else {
+                            device(n) = HybridsjFailureStatusError();
                           }
                         });
     const auto mirror = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), device);

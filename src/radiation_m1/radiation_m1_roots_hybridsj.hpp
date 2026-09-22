@@ -335,15 +335,19 @@ void compute_trial_step(const Real (&x)[M1_MULTIROOTS_DIM],
 }
 
 //----------------------------------------------------------------------------------------
-//! \fn HybridsjSignal radiationm1::HybridsjInitialize
-//  \brief Initialize the solver state for Powell's hybrid method
+//! \fn MathSignal radiationm1::HybridsjInitialize
+//  \brief Initialize the solver state for Powell's hybrid method. The function/Jacobian
+//  functor returns MathSignal so invalid evaluations terminate before factorization.
 template <class Functor, class... Types>
 KOKKOS_INLINE_FUNCTION MathSignal HybridsjInitialize(Functor &&fdf,
                                                                   HybridsjState &state,
                                                                   HybridsjParams &pars,
                                                                   Types... args) {
   // populate f, J for a given x
-  fdf(pars.x, pars.f, pars.J, args...);
+  const MathSignal ierr = fdf(pars.x, pars.f, pars.J, args...);
+  if (ierr != LinalgSuccess) {
+    return ierr;
+  }
 
   state.iter = 1;
   state.fnorm = enorm(pars.f);
@@ -365,7 +369,7 @@ KOKKOS_INLINE_FUNCTION MathSignal HybridsjInitialize(Functor &&fdf,
 }
 
 //----------------------------------------------------------------------------------------
-//! \fn HybridsjSignal radiationm1::HybridsjIterate
+//! \fn MathSignal radiationm1::HybridsjIterate
 //  \brief Iterate the solver state once for Powell's hybrid method
 template <class Functor, class... Types>
 KOKKOS_INLINE_FUNCTION MathSignal HybridsjIterate(Functor &&fdf,
@@ -376,8 +380,11 @@ KOKKOS_INLINE_FUNCTION MathSignal HybridsjIterate(Functor &&fdf,
 
   // Q^T f & dogleg
   compute_qtf(state.q, pars.f, state.qtf);
-  MathSignal dl = dogleg(state.r, state.qtf, state.diag, state.delta,
-                                      state.newton, state.gradient, pars.dx);
+  const MathSignal dl = dogleg(state.r, state.qtf, state.diag, state.delta,
+                               state.newton, state.gradient, pars.dx);
+  if (dl != LinalgSuccess) {
+    return dl;
+  }
 
   // compute trial step
   compute_trial_step(pars.x, pars.dx, state.x_trial);
@@ -389,7 +396,10 @@ KOKKOS_INLINE_FUNCTION MathSignal HybridsjIterate(Functor &&fdf,
   }
 
   // evaluate f at x + p
-  fdf(state.x_trial, state.f_trial, state.J_trial, args...);
+  MathSignal ierr = fdf(state.x_trial, state.f_trial, state.J_trial, args...);
+  if (ierr != LinalgSuccess) {
+    return ierr;
+  }
 
   // df = f_trial - f
   compute_df(state.f_trial, pars.f, state.df);
@@ -438,8 +448,9 @@ KOKKOS_INLINE_FUNCTION MathSignal HybridsjIterate(Functor &&fdf,
     state.nslow2 = 0;
   }
   if (state.ncfail == 2) {
-    {
-      fdf(pars.x, pars.f, pars.J, args...);
+    ierr = fdf(pars.x, pars.f, pars.J, args...);
+    if (ierr != LinalgSuccess) {
+      return ierr;
     }
 
     state.nslow2++;

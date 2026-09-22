@@ -332,12 +332,18 @@ KOKKOS_INLINE_FUNCTION void source_jacobian(
 class HybridsjFunctor {
  public:
   KOKKOS_INLINE_FUNCTION
-  void operator()(const Real x[M1_MULTIROOTS_DIM], Real f[M1_MULTIROOTS_DIM],
-                  Real J[M1_MULTIROOTS_DIM][M1_MULTIROOTS_DIM], BrentFunctor BrentFunc,
-                  SrcParams &src_params, RadiationM1Params &m1_params) const {
+  MathSignal operator()(const Real x[M1_MULTIROOTS_DIM], Real f[M1_MULTIROOTS_DIM],
+                        Real J[M1_MULTIROOTS_DIM][M1_MULTIROOTS_DIM],
+                        BrentFunctor BrentFunc, SrcParams &src_params,
+                        RadiationM1Params &m1_params) const {
     // Function to rootfind for
     //    f(q) = q - q^* - dt S[q]
-    auto ierr = prepare(BrentFunc, x, src_params, m1_params, m1_params.closure_type);
+    const MathSignal ierr =
+        prepare(BrentFunc, x, src_params, m1_params, m1_params.closure_type);
+    if (ierr != LinalgSuccess) {
+      return ierr;
+    }
+
     f[0] = x[0] - src_params.Estar - src_params.cdt * src_params.Edot;
     f[1] = x[1] - src_params.Fstar_d(1) - src_params.cdt * src_params.tS_d(1);
     f[2] = x[2] - src_params.Fstar_d(2) - src_params.cdt * src_params.tS_d(2);
@@ -352,6 +358,28 @@ class HybridsjFunctor {
     source_jacobian(m_q, src_params.F_u, m_F2, src_params.chi, src_params.kabs,
                     src_params.kscat, src_params.v_u, src_params.v_d, m_v2, src_params.W,
                     src_params.alp, src_params.cdt, m_qstar, J);
+
+    // prepare() evaluates the source at max(x[0], 0).  On the negative branch
+    // the source is independent of x[0], while the residual retains its raw
+    // x[0] term.  Use the derivative of that branch.
+    if (x[0] < 0.0) {
+      for (int a = 0; a < M1_MULTIROOTS_DIM; ++a) {
+        J[a][0] = 0.0;
+      }
+      J[0][0] = 1.0;
+    }
+
+    for (int a = 0; a < M1_MULTIROOTS_DIM; ++a) {
+      if (!Kokkos::isfinite(f[a])) {
+        return LinalgEbadfunc;
+      }
+      for (int b = 0; b < M1_MULTIROOTS_DIM; ++b) {
+        if (!Kokkos::isfinite(J[a][b])) {
+          return LinalgEbadfunc;
+        }
+      }
+    }
+    return LinalgSuccess;
   }
 };
 
