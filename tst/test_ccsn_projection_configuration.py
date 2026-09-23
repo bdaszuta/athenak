@@ -8,8 +8,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def printf_arguments(call):
-    """Return a printf call's format string and its top-level arguments."""
+def printf_arguments(call, format_index=0):
+    """Return a printf-family call's format string and top-level arguments."""
     body = call[call.index("(") + 1 : call.rindex(")")]
     parts, depth, current, in_string, escaped = [], 0, "", False, False
     for char in body:
@@ -34,8 +34,8 @@ def printf_arguments(call):
             continue
         current += char
     parts.append(current)
-    format_string = "".join(re.findall(r'"((?:[^"\\]|\\.)*)"', parts[0]))
-    return format_string, parts[1:]
+    format_string = "".join(re.findall(r'"((?:[^"\\]|\\.)*)"', parts[format_index]))
+    return format_string, parts[format_index + 1:]
 
 
 def test_projection_header_is_backend_neutral():
@@ -327,9 +327,9 @@ def test_ccsn_cell_centered_temperature_state_and_entropy_failure_line():
     assert "temperature_(m, 0, k, j, i) = T_new;" in deleptonization
     assert "initial_prim[PTM] = temperature(m, 0, k, j, i);" in projection
 
-    call_start = deleptonization.index("Kokkos::printf")
+    call_start = deleptonization.index("std::snprintf")
     call = deleptonization[call_start : deleptonization.index(");", call_start) + 2]
-    format_string, arguments = printf_arguments(call)
+    format_string, arguments = printf_arguments(call, format_index=2)
     conversions = re.findall(
         r"%[-+ #0]*[\d.*]*(?:hh|h|ll|l|j|z|t|L)?[diouxXeEfFgGaAcspn]",
         format_string)
@@ -339,4 +339,12 @@ def test_ccsn_cell_centered_temperature_state_and_entropy_failure_line():
                   "Tmax=", "mu_nu=", "E_nu_avg=", "s_target=", "s_Tmin=",
                   "s_Tmax=", "update_entropy=", "correction_active="):
         assert field in format_string, field
-    assert format_string.count("\\n") == 1
+    assert format_string.count("\\n") == 0
+    assert "Kokkos::atomic_compare_exchange(&entropy_failed(), 0, 1)" in deleptonization
+    assert deleptonization.index("Kokkos::fence();") < deleptonization.index(
+        "Kokkos::deep_copy(h_entropy_failure, entropy_failure);")
+    assert "Kokkos::abort(message);" in deleptonization
+    assert deleptonization.index("std::snprintf(") < deleptonization.index(
+        "Kokkos::abort(message);")
+    assert deleptonization.index("Kokkos::abort(") < deleptonization.index(
+        "PrimToConInit(")

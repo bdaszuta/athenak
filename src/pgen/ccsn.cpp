@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -930,6 +931,16 @@ static void BounceEntropyImpl(MeshBlockPack *pmbp, bool &at_bounce,
 //  EOS).
 //         Invert with the existing CompOSE temperature interpolation policy.
 
+struct EntropyInversionFailure {
+  int rank, gid, k, j, i;
+  Real rho, rho_cgs, n, p;
+  Real Ye_old, Ye_new, delta_Ye;
+  Real T_old, T_new, T_min, T_max;
+  Real mu_nu, E_nu_avg;
+  Real s_per_baryon, s_at_T_min, s_at_T_max;
+  int update_entropy, correction_active;
+};
+
 template <class EOSPolicy, class ErrorPolicy>
 void DeleptonizationImpl(Mesh *pm) {
   MeshBlockPack *pmbp = pm->pmb_pack;
@@ -975,6 +986,11 @@ void DeleptonizationImpl(Mesh *pm) {
   // Read unit metadata on the host; eos_ remains const in the kernel.
   const Real rho_code_to_cgs = pdyngr->GetCodeUnitSystem().MassDensityConversion(
       Primitive::MakeCGS());
+
+  Kokkos::View<int, DevExeSpace> entropy_failed("ccsn_entropy_failed");
+  Kokkos::View<EntropyInversionFailure, DevExeSpace> entropy_failure(
+      "ccsn_entropy_failure");
+  Kokkos::deep_copy(entropy_failed, 0);
 
   par_for(
       "deleptonization", DevExeSpace(), 0, nmb - 1, ks, ke, js, je, is, ie,
@@ -1039,23 +1055,47 @@ void DeleptonizationImpl(Mesh *pm) {
             T_new < T_min || T_new > T_max) {
           const Real s_at_T_min = eos_.GetEntropyPerBaryon(n, T_min, Y_new);
           const Real s_at_T_max = eos_.GetEntropyPerBaryon(n, T_max, Y_new);
-          Kokkos::printf(
-              "CCSN entropy inversion FAIL rank=%d gid=%d cell=(%d,%d,%d)"
-              " rho=% .17e rho_cgs=% .17e n=% .17e P=% .17e"
-              " Ye_old=% .17e Ye_new=% .17e dYe=% .17e"
-              " T_old=% .17e T_new=% .17e Tmin=% .17e Tmax=% .17e"
-              " mu_nu=% .17e E_nu_avg=% .17e"
-              " s_target=% .17e s_Tmin=% .17e s_Tmax=% .17e"
-              " update_entropy=%d correction_active=%d\n",
-              rank, gid_start + m, k, j, i, rho, rho_cgs, n, p, Ye_old,
-              Ye_new, delta_Ye, T_old, T_new, T_min, T_max, mu_nu, E_nu_avg,
-              s_per_baryon, s_at_T_min, s_at_T_max, do_entropy ? 1 : 0,
-              (do_entropy && mu_nu > E_nu_avg && rho < rho_trap) ? 1 : 0);
-          Kokkos::abort("CCSN entropy inversion failed after deleptonization");
+          // The first failing cell owns the report. The host reads it only
+          // after this kernel completes, so the flag cannot expose a partial record.
+          if (Kokkos::atomic_compare_exchange(&entropy_failed(), 0, 1) == 0) {
+            entropy_failure() = {
+                rank, gid_start + m, k, j, i,
+                rho, rho_cgs, n, p, Ye_old, Ye_new, delta_Ye,
+                T_old, T_new, T_min, T_max, mu_nu, E_nu_avg,
+                s_per_baryon, s_at_T_min, s_at_T_max,
+                do_entropy ? 1 : 0,
+                (do_entropy && mu_nu > E_nu_avg && rho < rho_trap) ? 1 : 0};
+          }
+          return;
         }
         w0_(m, IPR, k, j, i) = eos_.GetPressure(n, T_new, Y_new);
         temperature_(m, 0, k, j, i) = T_new;
       });
+
+  // Finish all failing writes before inspecting the device-side record.
+  Kokkos::fence();
+  auto h_entropy_failed = Kokkos::create_mirror_view(entropy_failed);
+  Kokkos::deep_copy(h_entropy_failed, entropy_failed);
+  if (h_entropy_failed()) {
+    auto h_entropy_failure = Kokkos::create_mirror_view(entropy_failure);
+    Kokkos::deep_copy(h_entropy_failure, entropy_failure);
+    const auto &f = h_entropy_failure();
+    char message[1024];
+    std::snprintf(
+        message, sizeof(message),
+        "CCSN entropy inversion FAIL rank=%d gid=%d cell=(%d,%d,%d)"
+        " rho=% .17e rho_cgs=% .17e n=% .17e P=% .17e"
+        " Ye_old=% .17e Ye_new=% .17e dYe=% .17e"
+        " T_old=% .17e T_new=% .17e Tmin=% .17e Tmax=% .17e"
+        " mu_nu=% .17e E_nu_avg=% .17e"
+        " s_target=% .17e s_Tmin=% .17e s_Tmax=% .17e"
+        " update_entropy=%d correction_active=%d",
+        f.rank, f.gid, f.k, f.j, f.i, f.rho, f.rho_cgs, f.n, f.p,
+        f.Ye_old, f.Ye_new, f.delta_Ye, f.T_old, f.T_new, f.T_min,
+        f.T_max, f.mu_nu, f.E_nu_avg, f.s_per_baryon, f.s_at_T_min,
+        f.s_at_T_max, f.update_entropy, f.correction_active);
+    Kokkos::abort(message);
+  }
 
   // The native moving, magnetized GRMHD P2C includes momentum and magnetic terms.
   pmbp->pdyngr->PrimToConInit(is, ie, js, je, ks, ke);
