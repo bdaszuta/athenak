@@ -31,6 +31,22 @@ Real minmod2(Real rl, Real rp, Real th) {
 KOKKOS_INLINE_FUNCTION
 int CombinedIdx(int nuidx, int varidx, int nvars) { return varidx + nuidx * nvars; }
 
+// The EOS has one heavy energy weight because its two equilibrium densities
+// coincide. The current densities and their absorption weights need not coincide.
+KOKKOS_INLINE_FUNCTION
+void partial_equilibrium_heavy_weights(const Real dtau, const Real kappa_2,
+                                       const Real kappa_3, const int nspecies,
+                                       Real &w_2, Real &w_3, Real &w_eq) {
+  const Real a_2 = dtau * kappa_2;
+  w_2 = a_2 / (1.0 + a_2);
+  w_3 = 0.0;
+  if (nspecies > 3) {
+    const Real a_3 = dtau * kappa_3;
+    w_3 = a_3 / (1.0 + a_3);
+  }
+  w_eq = (nspecies > 3) ? 0.5 * (w_2 + w_3) : w_2;
+}
+
 //----------------------------------------------------------------------------------------
 //! \fn void radiationm1::calc_proj
 //  \brief Fluid projector: delta^a_b + u^a u_b

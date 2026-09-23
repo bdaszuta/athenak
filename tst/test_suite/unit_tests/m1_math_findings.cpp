@@ -5,6 +5,7 @@
 #include <limits>
 
 #include "radiation_m1/radiation_m1_calc_closure.hpp"
+#include "radiation_m1/radiation_m1_helpers.hpp"
 #include "radiation_m1/radiation_m1_sources.hpp"
 
 using Metric = AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2>;
@@ -541,11 +542,38 @@ Real HybridsjFailureStatusError() {
              : 1.0;
 }
 
+// Heavy equilibrium densities coincide, but their current densities and
+// absorption weights need not. Test the reduction on host and device.
+KOKKOS_INLINE_FUNCTION
+Real PeqHeavyWeightError(const int test) {
+  const int nspecies = (test == 3) ? 3 : 4;
+  const Real kappa_2 = (test == 2) ? 0.0 : 1.0;
+  const Real kappa_3 = (test == 0) ? 3.0 : kappa_2;
+  Real w_2, w_3, w_eq;
+  radiationm1::partial_equilibrium_heavy_weights(
+      1.0, kappa_2, kappa_3, nspecies, w_2, w_3, w_eq);
+  const Real ref_2 = (test == 2) ? 0.0 : 1.0 / 2.0;
+  const Real ref_3 = (nspecies == 3 || test == 2)
+                         ? 0.0 : ((test == 0) ? 3.0 / 4.0 : ref_2);
+  const Real ref_eq = (nspecies == 3) ? ref_2 : (ref_2 + ref_3) / 2.0;
+  const Real j_2 = 0.0, j_3 = (nspecies == 3) ? 0.0 : 2.0;
+  const Real j_eq = 1.0;
+  const Real rhs = w_2*j_2 + w_3*j_3;
+  const Real rhs_ref = ref_2*j_2 + ref_3*j_3;
+  const Real bound = w_2*Kokkos::fabs(j_eq - j_2) +
+                     w_3*Kokkos::fabs(j_eq - j_3);
+  const Real bound_ref = ref_2*Kokkos::fabs(j_eq - j_2) +
+                         ref_3*Kokkos::fabs(j_eq - j_3);
+  return Kokkos::fabs(w_2 - ref_2) + Kokkos::fabs(w_3 - ref_3) +
+         Kokkos::fabs(w_eq - ref_eq) + Kokkos::fabs(rhs - rhs_ref) +
+         Kokkos::fabs(bound - bound_ref);
+}
+
 int main(int argc, char **argv) {
   Kokkos::initialize(argc, argv);
   int failed = 0;
   {
-    constexpr int ntest = 27;
+    constexpr int ntest = 31;
     const Real expected[ntest] = {1.0 / 3.0, 21.0 / 5.0, 24.0 / 5.0,
                                   1.0 / 2.0, 1.0 / 2.0, 1.0};
     const char *names[ntest] = {
@@ -558,7 +586,9 @@ int main(int argc, char **argv) {
         "nonzero-source-energy-column", "newton-fallback-brent",
         "brent-exhaustion-status", "negative-trial-jacobian",
         "brent-failure-status", "source-fallback-status",
-        "source-acceptance", "hybridsj-failure-status"};
+        "source-acceptance", "hybridsj-failure-status",
+        "peq-heavy-unequal", "peq-heavy-equal", "peq-heavy-zero",
+        "peq-heavy-three-groups"};
     // Explicit host evaluation remains distinct from the device-kernel result.
     Real host[ntest];
     for (int n = 0; n < ntest; ++n) {
@@ -578,8 +608,10 @@ int main(int argc, char **argv) {
         host[n] = SourceFallbackError();
       } else if (n == 25) {
         host[n] = SourceAcceptanceError();
-      } else {
+      } else if (n == 26) {
         host[n] = HybridsjFailureStatusError();
+      } else {
+        host[n] = PeqHeavyWeightError(n - 27);
       }
     }
     Kokkos::View<Real *> device("m1_findings", ntest);
@@ -601,8 +633,10 @@ int main(int argc, char **argv) {
                             device(n) = SourceFallbackError();
                           } else if (n == 25) {
                             device(n) = SourceAcceptanceError();
-                          } else {
+                          } else if (n == 26) {
                             device(n) = HybridsjFailureStatusError();
+                          } else {
+                            device(n) = PeqHeavyWeightError(n - 27);
                           }
                         });
     const auto mirror = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), device);

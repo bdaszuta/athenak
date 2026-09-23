@@ -221,15 +221,19 @@ class EOSCompOSE : public EOSPolicyInterface, public LogPolicy, public SupportsE
   //  All five equal to 1 is the fully trapped equilibrium, all five equal to 0 leaves
   //  the matter state untouched.
   //
-  //  The caller must build the right-hand sides with the *same* weights it passes here,
+  //  The caller must use the same weights for the electron equilibrium terms
+  //  and their current densities. For the heavy groups, their equilibrium
+  //  densities are equal: w[PEQ_W1_X] is the mean of the individual weights,
+  //  while their current densities retain their individual weights on the RHS:
   //
-  //      e_rhs   = e_matter + w[PEQ_W1_NUE]*J_nue + w[PEQ_W1_ANUE]*J_anue
-  //                         + w[PEQ_W1_X]*J_x
-  //      Yl_rhs  = Y_e      + (w[PEQ_W0_NUE]*N_nue - w[PEQ_W0_ANUE]*N_anue)/n
+  //      e_rhs  = e_matter + w[PEQ_W1_NUE]*J_nue + w[PEQ_W1_ANUE]*J_anue
+  //                        + w_x*J_x + w_ax*J_ax
+  //      Yl_rhs = Y_e + (w[PEQ_W0_NUE]*N_nue - w[PEQ_W0_ANUE]*N_anue)/n
   //
-  //  where J and N are the neutrino energy and number densities the matter is currently
-  //  in contact with. Weights and right-hand sides that disagree solve a problem that is
-  //  not on the family and has no physical interpretation.
+  //  with w[PEQ_W1_X] = (w_x + w_ax)/2 for four groups; for three
+  //  groups it is the sole heavy weight. Averaging the opacities first, or
+  //  applying their mean to the current heavy densities, solves a different
+  //  relaxation problem when the groups differ.
   KOKKOS_INLINE_FUNCTION int BetaEquilibriumPartial(Real n, Real e_rhs, Real *Yl_rhs,
                                                      const Real w[PEQ_NWEIGHTS],
                                                      Real &T_eq, Real *Y_eq,

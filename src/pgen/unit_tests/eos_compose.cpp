@@ -724,6 +724,41 @@ void PerformNuEqTests(Mesh *pmesh, ParameterInput *pin) {
     success = false;
   }
 
+  // Unequal heavy weights share one EOS equilibrium coefficient, but the
+  // current densities enter the energy right-hand side separately. Choose
+  // unequal current densities whose weighted sum equals the known equilibrium
+  // sum; the EOS must recover that original matter state.
+  int n_heavy_bad = 0;
+  Kokkos::parallel_reduce(
+      "nueq_heavy_pair", Kokkos::RangePolicy<>(DevExeSpace(), 0, 1),
+      KOKKOS_LAMBDA(const int &, int &bad) {
+        const Real n = logs.exp2_(ln_lo + (nn/2)*dln);
+        const Real T = logs.exp2_(lT_lo + (nT/2)*dlT);
+        Real Y[MAX_SPECIES] = {Y_lo + (nY/2)*dY, 0.0, 0.0};
+        Real n_nu[3], e_nu[3];
+        eos.GetTrappedNeutrinos(n, T, Y, n_nu, e_nu);
+        const Real J_eq_x = 0.5*(e_nu[1] + e_nu[2]);
+        const Real J_2 = 2.0*J_eq_x;
+        const Real J_3 = (2.0/3.0)*J_eq_x;
+        const Real w[PEQ_NWEIGHTS] = {0.0, 0.0, 0.5, 0.0, 0.0};
+        const Real e_rhs = eos.GetEnergy(n, T, Y) +
+                           0.25*J_2 + 0.75*J_3;
+        Real Yl[MAX_SPECIES] = {Y[0], 0.0, 0.0};
+        Real T_try = T;
+        Real Y_try[MAX_SPECIES] = {Y[0], 0.0, 0.0};
+        const bool ok = eos.GetBetaEquilibriumPartial(
+            n, e_rhs, Yl, w, T_try, Y_try, T, Y);
+        if (!ok || !(Kokkos::fabs(T_try/T - 1.0) < tol_T) ||
+            !(Kokkos::fabs(Y_try[0] - Y[0]) < tol_Y)) {
+          bad += 1;
+        }
+      }, n_heavy_bad);
+  if (n_heavy_bad != 0) {
+    std::cout << "Unequal-heavy-weight partial equilibrium did not recover the "
+                 "known matter state.\n";
+    success = false;
+  }
+
 #if ENABLE_NURATES
   // ------------------------------------------------------------------------------
   // E. the Fermi-Dirac integrals the split weights are built on

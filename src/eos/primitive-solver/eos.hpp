@@ -385,7 +385,10 @@ class EOS : public EOSPolicy, public ErrorPolicy {
   //         all five weights equal to 1.
   //
   //  \param[in]    n       The number density
-  //  \param[in]    e_rhs   Matter energy density plus the *weighted* neutrino energy
+  //  \param[in]    e_rhs   Matter energy plus individually weighted current
+  //                        neutrino energies. The EOS's single heavy weight
+  //                        multiplies equal heavy equilibrium densities, so
+  //                        it is the mean of the two current-state weights.
   //  \param[in]    Yl_rhs  Electron fraction plus the *weighted* neutrino lepton number
   //  \param[in]    w       Weights of the neutrino terms, indexed by PeqWeightIndex
   //  \param[inout] T_eq    The equilibrium temperature.

@@ -34,12 +34,11 @@ class SupportsChemicalPotentials{};
 //! equal to 1 is the fully trapped equilibrium and all five 0 leaves the matter state
 //! untouched.
 //
-//  The heavy-lepton pairs share one weight because nothing in the opacities
-//  distinguishes nu_x from its antiparticle: any difference between the two is
-//  numerical, not physical. That will stop being true as more physics goes in, and at
-//  that point they need splitting too -- eta = 0 makes their *equilibrium* densities
-//  coincide, which is not on its own enough, since the weight also multiplies the
-//  actual densities and those differ once radiation is advected or floored.
+//  The heavy-lepton groups share one EOS weight because their *equilibrium*
+//  densities coincide at eta = 0. Their current densities and effective
+//  absorption coefficients can differ. For unequal weights, the caller passes
+//  their arithmetic mean here and builds the energy right-hand side with the
+//  individual weights on the individual current densities.
 //
 //  The residuals consume the pair mean and half-difference,
 //

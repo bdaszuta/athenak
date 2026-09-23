@@ -14,6 +14,7 @@
 #include "dyn_grmhd/dyn_grmhd.hpp"
 #include "eos/primitive-solver/unit_system.hpp"
 #include "radiation_m1/radiation_m1.hpp"
+#include "radiation_m1/radiation_m1_helpers.hpp"
 #include "radiation_m1/radiation_m1_nurates.hpp"
 
 namespace radiationm1 {
@@ -406,36 +407,21 @@ TaskStatus RadiationM1::CalcOpacityNurates_(Driver *pdrive, int stage) {
               // exp(eta), with the lepton residual their difference, so the two
               // errors reinforce.
               //
-              // The heavy pairs share one weight because nothing in the
-              // opacities distinguishes nu_x from its antiparticle: the two
-              // differ only numerically. That weight comes from a J-weighted
-              // kappa, so kappa_bar*J equals the sum of the per-species
-              // kappa_x*J_x at t^n, falling back to the arithmetic mean when
-              // the field is empty and there is nothing to weight with. Once
-              // the physics does distinguish them, they need splitting the same
-              // way: eta = 0 equalises their equilibrium densities but not the
-              // actual ones, so no single weight is exact for both sides.
-              Real J_x = nudens_1[2];
-              Real kJ_x = abs_1_loc[2] * nudens_1[2];
-              Real ks_x = abs_1_loc[2];
-              int n_x = 1;
-              if (nspecies_ > 3) {
-                J_x += nudens_1[3];
-                kJ_x += abs_1_loc[3] * nudens_1[3];
-                ks_x += abs_1_loc[3];
-                n_x = 2;
-              }
-
-              const Real kbar_1x = (J_x > 0.0) ? kJ_x/J_x : ks_x/n_x;
+              // The EOS heavy equilibrium densities coincide, so their two
+              // weights have an arithmetic mean on its equilibrium side. The
+              // absorption coefficients can still differ, and each current
+              // density must retain its own weight on the right-hand side.
+              const Real kappa_3 = (nspecies_ > 3) ? abs_1_loc[3] : 0.0;
+              Real w_12, w_13, w_1x;
+              partial_equilibrium_heavy_weights(dtau, abs_1_loc[2], kappa_3,
+                                                nspecies_, w_12, w_13, w_1x);
 
               const Real a_1p = dtau*abs_1_loc[0];
               const Real a_1m = dtau*abs_1_loc[1];
-              const Real a_1x = dtau*kbar_1x;
               const Real a_0p = dtau*abs_0_loc[0];
               const Real a_0m = dtau*abs_0_loc[1];
               const Real w_1p = a_1p/(1.0 + a_1p);
               const Real w_1m = a_1m/(1.0 + a_1m);
-              const Real w_1x = a_1x/(1.0 + a_1x);
               const Real w_0p = a_0p/(1.0 + a_0p);
               const Real w_0m = a_0m/(1.0 + a_0m);
 
@@ -448,11 +434,13 @@ TaskStatus RadiationM1::CalcOpacityNurates_(Driver *pdrive, int stage) {
               // NaN weight gates the cell out deliberately, not by luck.
               const bool w_finite = Kokkos::isfinite(w_1p) &&
                                     Kokkos::isfinite(w_1m) &&
-                                    Kokkos::isfinite(w_1x) &&
+                                    Kokkos::isfinite(w_12) &&
+                                    (nspecies_ < 4 || Kokkos::isfinite(w_13)) &&
                                     Kokkos::isfinite(w_0p) &&
                                     Kokkos::isfinite(w_0m);
               Real w_max = (w_1p > w_1m) ? w_1p : w_1m;
-              w_max = (w_max > w_1x) ? w_max : w_1x;
+              w_max = (w_max > w_12) ? w_max : w_12;
+              if (nspecies_ > 3) w_max = (w_max > w_13) ? w_max : w_13;
               w_max = (w_max > w_0p) ? w_max : w_0p;
               w_max = (w_max > w_0m) ? w_max : w_0m;
 
@@ -480,20 +468,17 @@ TaskStatus RadiationM1::CalcOpacityNurates_(Driver *pdrive, int stage) {
                                     : 0.0;
                 const bool cv_ok = Kokkos::isfinite(cv) && cv > 0.0;
 
-                Real J_x_eq = nudens_1_thin[2];
-                if (nspecies_ > 3) {
-                  J_x_eq += nudens_1_thin[3];
-                }
-
-                // Sum of absolute per-species terms, not the absolute value of
-                // the weighted net: the gate's only job is to skip cells where
-                // nothing happens, and only the sum is guaranteed not to
-                // under-estimate the move, so only it cannot gate out a cell
-                // that would have moved.
+                // The two heavy departures can cancel in their sum, even
+                // though either group's energy source still moves matter.
+                const Real dJ_x_hat =
+                    w_12*Kokkos::fabs(nudens_1_thin[2] - nudens_1[2]) +
+                    ((nspecies_ > 3)
+                         ? w_13*Kokkos::fabs(nudens_1_thin[3] - nudens_1[3])
+                         : 0.0);
                 const Real dlnT_hat =
                     cv_ok ? (w_1p*Kokkos::fabs(nudens_1_thin[0] - nudens_1[0]) +
                              w_1m*Kokkos::fabs(nudens_1_thin[1] - nudens_1[1]) +
-                             w_1x*Kokkos::fabs(J_x_eq - J_x))/(T*cv)
+                             dJ_x_hat)/(T*cv)
                           : 0.0;
                 const Real dYe_hat =
                     (w_0p*Kokkos::fabs(nudens_0_thin[0] - nudens_0[0]) +
@@ -534,8 +519,12 @@ TaskStatus RadiationM1::CalcOpacityNurates_(Driver *pdrive, int stage) {
                         f_soft*w_1p, f_soft*w_1m, f_soft*w_1x,
                         f_soft*w_0p, f_soft*w_0m};
 
+                    // The EOS weight multiplies equal heavy equilibrium
+                    // densities; the current densities retain separate weights.
                     const Real e_rhs = e_mat + u[PEQ_W1_NUE]*nudens_1[0] +
-                                       u[PEQ_W1_ANUE]*nudens_1[1] + u[PEQ_W1_X]*J_x;
+                                       u[PEQ_W1_ANUE]*nudens_1[1] +
+                                       f_soft*(w_12*nudens_1[2] +
+                                               w_13*nudens_1[3]);
                     Real Yl_rhs[3] = {Y + (u[PEQ_W0_NUE]*nudens_0[0] -
                                            u[PEQ_W0_ANUE]*nudens_0[1])/nb, 0.0, 0.0};
 
