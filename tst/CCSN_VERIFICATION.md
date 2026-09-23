@@ -1,10 +1,10 @@
 # CCSN prebuilt-executable regressions
 
-Source only: these tests have not been executed. No CCSN build, simulation,
-pytest invocation, test-module import or numerical experiment was performed
-while authoring them. Runtime verification requires separate authorization.
+The pytest suite consumes a separately built CCSN executable and supplied data;
+it does not configure or build AthenaK. The native wrapper compiles a focused
+regression main against the matching build's objects.
 
-## Inputs and eventual invocation
+## Inputs and invocation
 
 `test_suite/ccsn/test_ccsn_prebuilt.py` uses native pytest discovery and the
 existing `vis/python/bin_convert.py` reader. It never calls build helpers. Do
@@ -16,7 +16,9 @@ Provide absolute paths through these test-only environment variables:
   M1 with a four-group equilibrium opacity backend (BNS-NuRates, or the standalone
   weakrates backend), and dynamical GRMHD/Z4c support. Use the
   reviewed integrated source, including the QOL 32-entry history
-  capacity/labels/filename changes.
+  capacity/labels/filename changes. The standalone feature branch's CCSN
+  `static_assert(NHISTORY_VARIABLES >= 32)` does not compile with its 20-entry
+  history capacity; do not remove the assertion as a test workaround.
 - `CCSN_TEST_INPUT`: a real CCSN deck, with `<mhd> dyn_eos=compose`, one Ye scalar,
   geometric-solar units, `<adm>`, `<z4c>`, `<radiation_m1>` and `<problem>`.
   Keep suitable domain bounds, floors, magnetic/rotation controls, reaction
@@ -40,7 +42,7 @@ therefore runs this suite with weakrates executables from both builds and with a
 BNS-NuRates executable from the enabled build. The projection source names no backend.
 The selected backend reaches it only through the module equilibrium interface.
 
-After runtime authorization, from this checkout's `tst/` directory:
+From this checkout's `tst/` directory, with the environment variables above:
 
 ```sh
 python -m pytest -q -rs test_suite/ccsn/test_ccsn_prebuilt.py
@@ -49,13 +51,13 @@ python -m pytest -q -rs test_suite/ccsn/test_ccsn_prebuilt.py
 Do not use pytest-xdist or other concurrent test workers. Each process uses one
 OpenMP thread; MPI cases use exactly two ranks. Inputs are copied into pytest's
 `tmp_path`, reduced to a non-AMR 16x16x16 root grid with eight 8x8x8 blocks and four
-ghost cells, and capped at six total cycles (most launches use zero to three).
+ghost cells, and capped at four total cycles (most launches use zero to three).
 Each launch has a 120-second process-group timeout. Commands, native binary /
 restart / history outputs and logs stay in that case's temporary directory.
 Production decks, profiles, tables and executables are never edited or generated.
 No CMake options, builds or executable downloads are part of these tests.
 
-## Covered paths when later executed
+## Paths exercised by the prebuilt suite
 
 - Real-profile startup and malformed-row rejection: missing/empty/single-row
   files, short rows, bad/nonfinite fields, negative/duplicate/decreasing radii,
@@ -66,6 +68,21 @@ No CMake options, builds or executable downloads are part of these tests.
   serial and two-rank MPI. Restart points to a deliberately absent progenitor:
   reopening ICs fails. Native matter, radiation and Z4c fields are compared.
   Masked radiation must remain zero; transport must produce resolved evolution.
+- Opt-in core mode: startup rejects incompatible recoupling/bounce/projection,
+  empirical-method, EOS, scalar, M1 opacity/module/source/backreaction and
+  density settings (including zero, negative and nonfinite `rho_trap`). A fresh
+  `Simple` alias and post-bounce `None` restart are admitted. Three-cycle fresh
+  and one-plus-two restart runs compare matter, radiation and Z4c fields with
+  no progenitor on restart; omitted vs explicit false compares legacy fields
+  for each configured feedback combination.
+- Core-mode forced bounce, uninterrupted through the following full step, checks
+  the deferred-expansion diagnostic and persisted bounce history. The separate
+  stop-before-M1 case retains radiation moments through the event and zero-step
+  post-bounce reload, then evolves from that checkpoint with empirical `None`.
+  Both fresh/restart and forced-bounce cases include optional two-rank MPI;
+  without `CCSN_TEST_MPIEXEC` those MPI cases **skip**, not pass. Neither an
+  end-of-step binary dump nor the default low-density smoke profile proves that
+  cells above `rho_trap` were selected.
 - Recoupling with all four configured `(backreact, backreact_tmunu)` combinations.
   Pre-bounce fields must agree with the feedback-off control; configured flags
   must remain intact. A forced entropy event stops before M1, retains the evolved
@@ -75,7 +92,9 @@ No CMake options, builds or executable downloads are part of these tests.
   post-hydro states against a masked non-bouncing control with deleptonization
   disabled on both sides. Require an actual projected cell and unchanged D.
   Full-precision conservation is not certified by these dumps. Then reload and
-  continue the projected checkpoint. Physical EQL cutoffs are not weakened.
+  continue the projected checkpoint. This test alone sets
+  `problem/eql_rho_min_cgs=1e7` because the supplied progenitor's initial peak
+  density is below the inherited `1e11` cutoff; production inputs are unchanged.
 - Explicit rejection of nonconservative injection, alternate bounce/refinement
   criteria, incompatible recoupling/projection and invalid projection controls.
   `update_conserved=true` is rejected; all valid cases retain native GRMHD P2C.
@@ -87,13 +106,45 @@ unreachable density gate; transition cases lower the entropy threshold only to
 force the real entropy predicate immediately. Those events are lifecycle tests,
 not physical bounce predictions or a validation of the entropy-unit accessor.
 
+## Direct native core-coupling checks (separate execution)
+
+Build the reviewed integrated `PROBLEM=ccsn` target, then invoke
+`python tst/test_ccsn_core_coupling.py BUILD EOS PROGENITOR`. This is **not**
+the prebuilt-only pytest command above: it compiles/links a focused C++ test
+against the actual CCSN/M1/GRMHD/EOS objects from that build. The entry point
+must verify the CMake source root, CCSN problem choice, double precision,
+NuRATES availability and serial MPI-off configuration; reuse the recorded
+`main.cpp` compile command and `athena` link command, replacing only its object
+and output. No old objects from another checkout may be linked. Run cases in
+separate processes to avoid CCSN's file-scope state crossing cases.
+
+The native entry point contains seven cases: selection/frozen crossings,
+controlled explicit and implicit sources, physical NuRATES coefficients on both
+sides of the selector, current-time coordinate excision, Tmunu addition, and
+bounce handoff. Interface transport, limited sources, AMR regeneration, and a
+direct legacy-disabled comparison from section 8.3 are not implemented in this
+entry point. A missing, skipped or nonexecuted native case cannot be reported as
+a pass; the physical-opacity case checks finite, nonnegative and nonzero rates,
+not their calibrated accuracy.
+
+Report Serial, two-rank MPI and device (MPI-off CUDA/HIP) outcomes separately.
+A Serial result is not a device result: repeat the native source against an
+approved device build without discarding its compiler flags. A two-rank
+prebuilt run checks global bounce history/continuation but does not measure
+per-cell deposition or substitute for native AMR and excision checks. The
+prebuilt suite disables AMR and writes float32 fields even for a double build;
+its field equality checks establish lifecycle smoke behavior, not full-precision
+collision balance or a calibrated core. Compare false-mode outputs against the
+pre-change integrated baseline using the same compiler/backend for a regression
+claim; comparing omitted and explicit false on one new build is not enough.
+
 ## Remaining manual or higher-precision verification
 
-All runtime results remain unverified. These tests require real, emitting/hot
-input data on the small retained domain; no such dataset was resolved here.
-Native binary fields are float32 even with a double executable. State-preserving
-comparisons require exact stored-field equality, without ULP bands or excluded
-cells; restart-roundoff differences must be diagnosed rather than silently hidden.
+The supplied real progenitor and CompOSE table exercise the bounded serial
+smoke cases, but native binary fields are float32 even with a double executable.
+State-preserving comparisons require exact stored-field equality, without ULP
+bands or excluded cells; restart-roundoff differences must be diagnosed rather
+than silently hidden.
 These dumps do NOT certify the projection solver tolerance (normally 1e-8) or its
 convergence. The projection solves the coupled matter/radiation equilibrium in the
 matter's conserved variables, so check separately: the invariant scaled residual

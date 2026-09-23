@@ -35,6 +35,8 @@ TaskStatus RadiationM1::SetTmunu(Driver* pdrive, int stage) {
   // One-way M1 evolution must also suppress its geometric feedback. Preserve
   // the configured switch so reopening coupling does not force feedback on.
   if (params_.backreact_tmunu && coupling_enabled_) {
+    const bool use_region = use_coupling_region_;
+    auto region = coupling_region;
     DvceArray5D<Real> w0_ = w0;  // just a hack to compile on SYC
     if (ismhd) {
       w0_ = pmy_pack->pmhd->w0;
@@ -43,7 +45,8 @@ TaskStatus RadiationM1::SetTmunu(Driver* pdrive, int stage) {
     par_for(
         "radiation_m1_tmunu", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
         KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
-          if (!radiation_mask_(m, k, j, i)) {
+          if (!radiation_mask_(m, k, j, i) &&
+              (!use_region || region(m, k, j, i))) {
             // Calculate the determinant/volume form
             Real detg = adm::SpatialDet(
                 adm.g_dd(m, 0, 0, k, j, i), adm.g_dd(m, 0, 1, k, j, i),

@@ -651,6 +651,7 @@ void RefinementCondition(MeshBlockPack *pmbp) {
 
 // Global state for deleptonization
 static bool delept_active = false;
+static bool prebounce_core_coupling = false;
 static bool delept_update_entropy = true;
 static Real delept_E_nu_avg;
 static Real delept_rho_trap;
@@ -964,6 +965,13 @@ void DeleptonizationImpl(Mesh *pm) {
   const Real YeH = delept_Ye_H;
 
   const bool do_entropy = delept_update_entropy;
+  const bool regional = prebounce_core_coupling;
+  const bool use_region = regional && pmbp->pradm1 != nullptr &&
+                          pmbp->pradm1->CouplingRegionEnabled();
+  DvceArray4D<bool> region;
+  if (use_region) region = pmbp->pradm1->coupling_region;
+  const bool bh_excise = regional && pmbp->pcoord->coord_data.bh_excise;
+  auto excision = pmbp->pcoord->excision_floor;
   // Read unit metadata on the host; eos_ remains const in the kernel.
   const Real rho_code_to_cgs = pdyngr->GetCodeUnitSystem().MassDensityConversion(
       Primitive::MakeCGS());
@@ -971,6 +979,9 @@ void DeleptonizationImpl(Mesh *pm) {
   par_for(
       "deleptonization", DevExeSpace(), 0, nmb - 1, ks, ke, js, je, is, ie,
       KOKKOS_LAMBDA(int m, int k, int j, int i) {
+        if (regional && ((bh_excise && excision(m, k, j, i)) ||
+                         (use_region && region(m, k, j, i))))
+          return;
         Real rho = w0_(m, IDN, k, j, i);
         if (rho <= rho_min)
           return;
@@ -1448,7 +1459,10 @@ static void BounceCheck(Mesh *pm, ParameterInput *pin) {
 
     const char *m1_state = " unavailable.";
     if (pmbp->pradm1 != nullptr) {
-      if (recoupling_approach) {
+      if (prebounce_core_coupling) {
+        // The detecting step (including its M1 split) keeps the frozen region.
+        m1_state = " regional feedback retained; full-domain feedback begins next full step.";
+      } else if (recoupling_approach) {
         pmbp->pradm1->SetCouplingEnabled(true);
         m1_state = " evolved state preserved; configured fluid/geometry feedback restored.";
       } else {
@@ -1462,9 +1476,11 @@ static void BounceCheck(Mesh *pm, ParameterInput *pin) {
       }
     }
     bounce_detected = true;
-    delept_active = false; // disable deleptonization post-bounce
+    if (!prebounce_core_coupling) delept_active = false;
     if (global_variable::my_rank == 0) {
-      std::cout << "### CCSN: Bounce detected! Deleptonization disabled."
+      std::cout << (prebounce_core_coupling
+          ? "### CCSN: Bounce detected! Global deleptonization shutdown at next full step."
+          : "### CCSN: Bounce detected! Deleptonization disabled.")
                 << std::endl;
     }
     if (global_variable::my_rank == 0) {
@@ -1486,9 +1502,41 @@ static void BounceCheck(Mesh *pm, ParameterInput *pin) {
   }
 }
 
+// Freeze the primitive-density selector once before each full RK step. The
+// active pack and bounds may have changed during AMR since the last call.
+static void PrepareCoreCoupling(Mesh *pm) {
+  MeshBlockPack *pmbp = pm->pmb_pack;
+  auto *prad = pmbp->pradm1;
+  if (bounce_detected) {
+    prad->SetCouplingRegionEnabled(false);
+    delept_active = false;
+    return;
+  }
+  prad->SetCouplingRegionEnabled(true);
+  auto region = prad->coupling_region;
+  auto w0 = pmbp->pmhd->w0;
+  auto &indcs = pm->mb_indcs;
+  const Real rho_trap = delept_rho_trap;
+  par_for("ccsn_core_coupling", DevExeSpace(), 0, pmbp->nmb_thispack - 1,
+          indcs.ks, indcs.ke, indcs.js, indcs.je, indcs.is, indcs.ie,
+          KOKKOS_LAMBDA(int m, int k, int j, int i) {
+            region(m, k, j, i) = w0(m, IDN, k, j, i) >= rho_trap;
+          });
+}
+
 // Append only this pgen's post-hydro work. The scheduler owns receive progress;
 // no pointer into replaceable block, coordinate or boundary metadata is captured.
 static void EnrollCCSNTasks(Mesh *pm) {
+  if (prebounce_core_coupling) {
+    auto &before = *pm->pmb_pack->tl_map.at("before_timeintegrator");
+    TaskID before_dep(0);
+    for (int id = 1; id <= before.Size(); ++id)
+      before_dep = before_dep | TaskID(id);
+    before.AddTask([pm](Driver *d, int stage) {
+      PrepareCoreCoupling(pm);
+      return TaskStatus::complete;
+    }, before_dep);
+  }
   auto &tl = *pm->pmb_pack->tl_map.at("after_timeintegrator");
   TaskID dep(0);
   for (int id = 1; id <= tl.Size(); ++id) dep = dep | TaskID(id);
@@ -1602,7 +1650,8 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       std::exit(EXIT_FAILURE);
     }
     delept_E_nu_avg = pin->GetOrAddReal("problem", "E_nu_avg", 10.0);
-    delept_rho_trap = pin->GetOrAddReal("problem", "rho_trap", 1.0e12) / rho_code_to_cgs;
+    const Real rho_trap_cgs = pin->GetOrAddReal("problem", "rho_trap", 1.0e12);
+    delept_rho_trap = rho_trap_cgs / rho_code_to_cgs;
     delept_log10_rho1 = pin->GetOrAddReal("deleptonization", "log10_rho1", 7.795);
     delept_log10_rho2 = pin->GetOrAddReal("deleptonization", "log10_rho2", 12.816);
     delept_Ye_2 = pin->GetOrAddReal("deleptonization", "Ye_2", 0.308);
@@ -1611,6 +1660,8 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
     detect_bounce = pin->GetOrAddBoolean("problem", "detect_bounce", false);
     recoupling_approach = pin->GetOrAddBoolean("problem", "recoupling_approach", false);
+    prebounce_core_coupling =
+        pin->GetOrAddBoolean("problem", "prebounce_core_coupling", false);
     const bool inject_equilibrium = pin->GetOrAddBoolean("problem", "inject_equilibrium", false);
     equilibriate_post_bounce =
         pin->GetOrAddBoolean("problem", "equilibriate_post_bounce", true);
@@ -1735,6 +1786,42 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     t_bounce_val = bounce_detected ? pin->GetOrAddReal("problem", "t_bounce", 0.0) : 0.0;
     D_max_bounce_val = bounce_detected ? pin->GetOrAddReal("problem", "D_max_bounce", 0.0) : 0.0;
     if (bounce_detected) delept_active = false;
+    if (prebounce_core_coupling) {
+      auto reject = [](bool invalid, const char *reason) {
+        if (invalid) {
+          std::cerr << "### FATAL: prebounce_core_coupling requires " << reason
+                    << std::endl;
+          std::exit(EXIT_FAILURE);
+        }
+      };
+      reject(!recoupling_approach, "problem/recoupling_approach=true");
+      reject(!detect_bounce, "problem/detect_bounce=true");
+      reject(equilibriate_post_bounce || conservative_bounce_projection ||
+                 inject_equilibrium,
+             "problem/equilibriate_post_bounce=false, "
+             "problem/conservative_bounce_projection=false, "
+             "problem/inject_equilibrium=false");
+      reject(pmbp->pdyngr->IsFixedEvolution(), "mhd/fixed=false");
+      reject(pmbp->pdyngr->eos_policy != DynGRMHD_EOS::eos_compose,
+             "mhd/dyn_eos=compose");
+      reject(pmbp->pradm1 == nullptr, "radiation_m1 module");
+      auto *prad = pmbp->pradm1;
+      reject(!radiationm1::equilibrium_available(prad->params.opacity_type),
+             "radiation_m1/opacity_type with four-group equilibrium");
+      reject(prad->nspecies != radiationm1::equilibrium_nspecies ||
+                 prad->nvars != M1_N_IDX + 1,
+             "four-group number-evolving M1 layout");
+      reject(!prad->params.matter_sources || !prad->params.backreact,
+             "radiation_m1/matter_sources=true and radiation_m1/backreact=true");
+      reject(pmbp->pz4c != nullptr && !prad->params.backreact_tmunu,
+             "radiation_m1/backreact_tmunu=true with Z4c");
+      reject(!std::isfinite(rho_trap_cgs) || rho_trap_cgs <= 0.0 ||
+                 !std::isfinite(rho_code_to_cgs) || rho_code_to_cgs <= 0.0 ||
+                 !std::isfinite(delept_rho_trap) || delept_rho_trap <= 0.0,
+             "finite positive problem/rho_trap and density conversion");
+      reject(!bounce_detected && !delept_active,
+             "pre-bounce problem/deleptonization_method=Liebendoerfer or Simple");
+    }
     if (delept_active || detect_bounce) EnrollCCSNTasks(pmy_mesh_);
     user_tasks_enrolled_ = true;
   }
@@ -2089,7 +2176,13 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   // M1 lifecycle: either masked until conservative projection at bounce, or
   // evolved one-way before bounce and recoupled without changing M1 state.
   if (pmbp->pradm1 != nullptr) {
-    if (recoupling_approach) {
+    if (prebounce_core_coupling) {
+      // Reuse the ordinary fresh-state zeroing; a restart retains its moments.
+      if (!restart) pmbp->pradm1->SetEvolutionEnabled(false);
+      pmbp->pradm1->SetEvolutionEnabled(true);
+      pmbp->pradm1->SetCouplingEnabled(true);
+      pmbp->pradm1->SetCouplingRegionEnabled(!bounce_detected);
+    } else if (recoupling_approach) {
       // Fresh refined ICs start with no radiation. Restart must retain the
       // transported state, including a pre-bounce one-way state.
       if (!restart) pmbp->pradm1->SetEvolutionEnabled(false);

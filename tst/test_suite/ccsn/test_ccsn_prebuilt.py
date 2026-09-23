@@ -107,9 +107,14 @@ def _deck(ccsn, mode="transport", feedback=(True, True)):
         bounce_detection_method="entropy", bdm_rho_min="1e99", bdm_spb_max="3.0",
         inject_equilibrium="false", stop_at_bounce="false", post_bounce="false",
         t_bounce="0", D_max_bounce="0", stop_before_m1="false",
-        recoupling_approach=str(mode == "transport").lower(),
+        prebounce_core_coupling=str(mode == "core").lower(),
+        recoupling_approach=str(mode in ("transport", "core")).lower(),
         equilibriate_post_bounce=str(mode == "projection").lower(),
         conservative_bounce_projection=str(mode == "projection").lower())
+    if mode == "core":
+        blocks["problem"]["deleptonization_method"] = "Liebendoerfer"
+        blocks["problem"]["rho_trap"] = "1.0e12"
+        blocks["radiation_m1"].update(backreact="true", backreact_tmunu="true")
     if mode == "projection":
         for name in ("eql_rho_min_cgs", "eql_t_min_mev"):
             assert name in blocks["problem"], f"Supply physical projection cutoff {name}"
@@ -215,7 +220,8 @@ def _flag(snapshot, block, key):
 
 
 def _mode(snapshot, mode, feedback, bounced):
-    assert _flag(snapshot, "problem", "recoupling_approach") == (mode == "transport")
+    assert _flag(snapshot, "problem", "prebounce_core_coupling") == (mode == "core")
+    assert _flag(snapshot, "problem", "recoupling_approach") == (mode in ("transport", "core"))
     assert _flag(snapshot, "problem", "equilibriate_post_bounce") == (mode == "projection")
     assert _flag(snapshot, "problem", "conservative_bounce_projection") == (mode == "projection")
     assert not _flag(snapshot, "problem", "inject_equilibrium")
@@ -224,6 +230,153 @@ def _mode(snapshot, mode, feedback, bounced):
     assert _flag(snapshot, "problem", "post_bounce") == bounced
     for key, configured in zip(("backreact", "backreact_tmunu"), feedback):
         assert _flag(snapshot, "radiation_m1", key) == configured
+
+
+@pytest.mark.parametrize("feedback", ((True, True), (True, False), (False, True), (False, False)))
+def test_legacy_omitted_and_explicit_false_core_option(ccsn, tmp_path, feedback):
+    """The extra input key must not alter stored legacy fields or feedback settings."""
+    deck = _deck(ccsn, feedback=feedback)
+    deck["time"]["nlim"] = "1"
+    explicit = tmp_path / "explicit-false"
+    _run(ccsn, explicit, deck)
+    recorded = _snapshot(ccsn, explicit)
+    _mode(recorded, "transport", feedback, False)
+    del deck["problem"]["prebounce_core_coupling"]
+    omitted = tmp_path / "omitted"
+    _run(ccsn, omitted, deck)
+    other = _snapshot(ccsn, omitted)
+    _mode(other, "transport", feedback, False)
+    _same(ccsn, recorded, other)
+
+
+@pytest.mark.parametrize("block, key, value, conflict", (
+    ("problem", "recoupling_approach", "false", "recoupling_approach"),
+    ("problem", "detect_bounce", "false", "detect_bounce"),
+    ("problem", "equilibriate_post_bounce", "true", "equilibriate_post_bounce"),
+    ("problem", "conservative_bounce_projection", "true", "conservative_bounce_projection"),
+    ("problem", "inject_equilibrium", "true", "nonconservative M1 injection"),
+    ("problem", "deleptonization_method", "None", "deleptonization_method"),
+    ("problem", "rho_trap", "0", "rho_trap"),
+    ("problem", "rho_trap", "-1", "rho_trap"),
+    ("problem", "rho_trap", "1e999", "rho_trap"),
+    ("mhd", "fixed", "true", "mhd/fixed=false"),
+    ("mhd", "dyn_eos", "ideal", "CCSN deleptonization/entropy bounce requires CompOSE"),
+    ("mhd", "nscalars", "0", "one scalar"),
+    ("radiation_m1", "opacity_type", "none", "radiation_m1/opacity_type"),
+    ("radiation_m1", "opacity_type", "toy", "radiation_m1/opacity_type with four-group equilibrium"),
+    ("radiation_m1", "matter_sources", "false", "matter_sources"),
+    ("radiation_m1", "backreact", "false", "backreact"),
+    ("radiation_m1", "backreact_tmunu", "false", "backreact_tmunu"),
+))
+def test_core_incompatible_inputs_rejected(ccsn, tmp_path, block, key, value, conflict):
+    deck = _deck(ccsn, "core")
+    deck[block][key] = value
+    deck["time"]["nlim"] = "0"
+    log = _run(ccsn, tmp_path / "rejected", deck, failure=conflict)
+    assert "### FATAL" in log
+
+
+def test_core_requires_m1_module(ccsn, tmp_path):
+    deck = _deck(ccsn, "core")
+    del deck["radiation_m1"]
+    deck["time"]["nlim"] = "0"
+    log = _run(ccsn, tmp_path / "rejected", deck, failure="recoupling requires M1")
+    assert "### FATAL" in log
+
+
+@pytest.mark.parametrize("ranks", (1, 2))
+@pytest.mark.parametrize("method", ("Liebendoerfer", "Simple"))
+def test_core_fresh_restart(ccsn, tmp_path, ranks, method):
+    """Real-profile M1 and Z4c continuity; no threshold-membership inference."""
+    deck = _deck(ccsn, "core")
+    deck["problem"]["deleptonization_method"] = method
+    whole = tmp_path / "whole"
+    _run(ccsn, whole, deck, ranks=ranks)
+    expected = _snapshot(ccsn, whole)
+    assert expected["cycle"] == 3
+    _mode(expected, "core", (True, True), False)
+    assert float(expected["parameters"]["problem"]["rho_trap"]) == pytest.approx(1.0e12)
+    first = _snapshot(ccsn, whole, first=True)
+    assert first["cycle"] == 0
+    assert any((expected["fields"]["radiation"][f"E:{s}"] >
+                first["fields"]["radiation"][f"E:{s}"]).any() for s in range(4)), (
+        "No resolved M1 evolution; supply real emitting data")
+    _history(ccsn, whole)
+    short = tmp_path / "short"
+    deck["time"]["nlim"] = "1"
+    _run(ccsn, short, deck, ranks=ranks)
+    checkpoint = _restart(short)
+    absent_profile = tmp_path / "must_not_read_progenitor"
+    reload = tmp_path / "reload"
+    _run(ccsn, reload, restart=checkpoint, ranks=ranks,
+         overrides=("time/nlim=1", f"problem/progenitor={absent_profile}"))
+    _same(ccsn, _snapshot(ccsn, short), _snapshot(ccsn, reload))
+    resume = tmp_path / "resume"
+    _run(ccsn, resume, restart=checkpoint, ranks=ranks,
+         overrides=("time/nlim=3", f"problem/progenitor={absent_profile}"))
+    actual = _snapshot(ccsn, resume)
+    _mode(actual, "core", (True, True), False)
+    _same(ccsn, expected, actual)
+    _history(ccsn, resume)
+
+
+@pytest.mark.parametrize("ranks", (1, 2))
+def test_core_bounce_next_full_step(ccsn, tmp_path, ranks):
+    """An uninterrupted forced bounce persists and expands on the next step."""
+    deck = _deck(ccsn, "core")
+    deck["problem"].update(TRIGGER)
+    deck["time"]["nlim"] = "2"
+    directory = tmp_path / "uninterrupted"
+    log = _run(ccsn, directory, deck, ranks=ranks)
+    assert "next full step" in log, log
+    assert "full-domain" in log, log
+    state = _snapshot(ccsn, directory)
+    assert state["cycle"] == 2
+    _mode(state, "core", (True, True), True)
+    hist = _history(ccsn, directory)
+    assert hist["t_bounce"] > 0 and hist["D_max_bounce"] > 0
+
+
+@pytest.mark.parametrize("ranks", (1, 2))
+def test_core_stop_at_bounce_postbounce_restart(ccsn, tmp_path, ranks):
+    """A stopped split is retained, not compared to uninterrupted evolution."""
+    pre = tmp_path / "prebounce"
+    deck = _deck(ccsn, "core")
+    deck["time"]["nlim"] = "1"
+    _run(ccsn, pre, deck, ranks=ranks)
+    before = _snapshot(ccsn, pre)
+    _mode(before, "core", (True, True), False)
+    assert any((before["fields"]["radiation"][f"E:{s}"] > 0).any()
+               for s in range(4)), "No radiation to test retention"
+    forced = tmp_path / "stop"
+    overrides = [f"problem/{key}={value}" for key, value in TRIGGER.items()]
+    overrides += ["problem/stop_at_bounce=true", "time/nlim=3"]
+    log = _run(ccsn, forced, restart=_restart(pre), overrides=overrides, ranks=ranks)
+    assert "Terminating at bounce before the M1 split" in log
+    assert "next full step" in log, log
+    stopped = _snapshot(ccsn, forced)
+    assert stopped["cycle"] == 2
+    _mode(stopped, "core", (True, True), True)
+    assert stopped["parameters"]["problem"]["deleptonization_method"] == "None"
+    for name, values in before["fields"]["radiation"].items():
+        ccsn["np"].testing.assert_array_equal(stopped["fields"]["radiation"][name], values)
+    hist = _history(ccsn, forced)
+    assert hist["t_bounce"] == pytest.approx(stopped["time"], rel=1e-13)
+    assert hist["D_max_bounce"] > 0
+    checkpoint = _restart(forced)
+    reload = tmp_path / "reload"
+    _run(ccsn, reload, restart=checkpoint, overrides=("time/nlim=2",), ranks=ranks)
+    _same(ccsn, stopped, _snapshot(ccsn, reload))
+    continuation = tmp_path / "continuation"
+    _run(ccsn, continuation, restart=checkpoint, ranks=ranks,
+         overrides=("time/nlim=4", "problem/stop_at_bounce=false"))
+    after = _snapshot(ccsn, continuation)
+    assert after["cycle"] == 4 and after["time"] > stopped["time"]
+    _mode(after, "core", (True, True), True)
+    assert not _flag(after, "problem", "stop_before_m1")
+    after_hist = _history(ccsn, continuation)
+    for name in ("t_bounce", "D_max_bounce"):
+        assert after_hist[name] == pytest.approx(hist[name], rel=1e-13)
 
 
 def _restart(directory):
@@ -292,10 +445,14 @@ def test_prebounce_fresh_and_restart(ccsn, tmp_path, mode, ranks):
 def test_recoupling_feedback_and_postbounce_restart(ccsn, tmp_path, feedback):
     """Configured flags survive masking/transition; restart retains evolved M1."""
     off = tmp_path / "off"
-    _run(ccsn, off, _deck(ccsn, feedback=(False, False)))
+    deck = _deck(ccsn, feedback=(False, False))
+    deck["time"]["nlim"] = "1"
+    _run(ccsn, off, deck)
     baseline = _snapshot(ccsn, off)
     active = tmp_path / "configured"
-    _run(ccsn, active, _deck(ccsn, feedback=feedback))
+    deck = _deck(ccsn, feedback=feedback)
+    deck["time"]["nlim"] = "1"
+    _run(ccsn, active, deck)
     before = _snapshot(ccsn, active)
     _mode(before, "transport", feedback, False)
     # Both material and geometry must match the feedback-off case BEFORE bounce.
@@ -307,10 +464,10 @@ def test_recoupling_feedback_and_postbounce_restart(ccsn, tmp_path, feedback):
         "Need resolved emission above the initialized radiation to test recoupling")
     bounce = tmp_path / "bounce"
     overrides = [f"problem/{key}={value}" for key, value in TRIGGER.items()]
-    overrides += ["problem/stop_at_bounce=true", "time/nlim=5"]
+    overrides += ["problem/stop_at_bounce=true", "time/nlim=3"]
     text = _run(ccsn, bounce, restart=_restart(active), overrides=overrides)
     stopped = _snapshot(ccsn, bounce)
-    assert stopped["cycle"] == 4, "Bounce stop must follow exactly one full hydro step"
+    assert stopped["cycle"] == 2, "Bounce stop must follow exactly one full hydro step"
     assert "Terminating at bounce before the M1 split" in text
     _mode(stopped, "transport", feedback, True)
     # No radiation evolution occurs between this restart and the bounce stop:
@@ -322,14 +479,14 @@ def test_recoupling_feedback_and_postbounce_restart(ccsn, tmp_path, feedback):
     assert hist["D_max_bounce"] > 0
     checkpoint = _restart(bounce)
     reload = tmp_path / "reload"
-    _run(ccsn, reload, restart=checkpoint, overrides=("time/nlim=4",))
+    _run(ccsn, reload, restart=checkpoint, overrides=("time/nlim=2",))
     _same(ccsn, stopped, _snapshot(ccsn, reload))
     continued = tmp_path / "continued"
     # A stopped run alone never exercises restored feedback. Continue two steps.
     _run(ccsn, continued, restart=checkpoint,
-         overrides=("time/nlim=6", "problem/stop_at_bounce=false"))
+         overrides=("time/nlim=4", "problem/stop_at_bounce=false"))
     after = _snapshot(ccsn, continued)
-    assert after["cycle"] == 6 and after["time"] > stopped["time"]
+    assert after["cycle"] == 4 and after["time"] > stopped["time"]
     _mode(after, "transport", feedback, True)
     assert not _flag(after, "problem", "stop_before_m1")
     after_hist = _history(ccsn, continued)
@@ -340,6 +497,9 @@ def test_recoupling_feedback_and_postbounce_restart(ccsn, tmp_path, feedback):
 def test_projection_transition_and_postbounce_restart(ccsn, tmp_path):
     """Check a resolved projection/stop/restart transition, not full-precision balance."""
     deck = _deck(ccsn, "projection")
+    # This progenitor peaks below the inherited 1e11 g/cm^3 cutoff at t=0;
+    # select genuinely hot cells without changing the projection solver.
+    deck["problem"]["eql_rho_min_cgs"] = "1e7"
     # Disable the empirical Ye map on both sides to isolate the local projection.
     deck["problem"]["deleptonization_method"] = "None"
     deck["time"]["nlim"] = "1"

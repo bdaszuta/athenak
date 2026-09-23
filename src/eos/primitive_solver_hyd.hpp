@@ -60,12 +60,18 @@ class PrimitiveSolverHydro {
         std::exit(EXIT_FAILURE);
       }
     }
-    // Parameters for CompOSE EoS
+    // CompOSE supports exactly one composition scalar. Reject invalid input before
+    // SetNSpecies asserts, including in builds with assertions disabled.
     if constexpr (
-         std::is_same_v<Primitive::EOSCompOSE<Primitive::NormalLogs>, EOSPolicy> || 
+         std::is_same_v<Primitive::EOSCompOSE<Primitive::NormalLogs>, EOSPolicy> ||
          std::is_same_v<Primitive::EOSCompOSE<Primitive::NQTLogs>, EOSPolicy>) {
-      // Get and set number of scalars in table. This will currently fail if not 1.
-      ps.GetEOSMutable().SetNSpecies(pin->GetOrAddInteger(block, "nscalars", 1));
+      int nscalars = pin->GetOrAddInteger(block, "nscalars", 1);
+      if (nscalars != 1) {
+        std::cerr << "### FATAL: CompOSE requires exactly one scalar (" << block
+                  << "/nscalars=1)" << std::endl;
+        std::exit(EXIT_FAILURE);
+      }
+      ps.GetEOSMutable().SetNSpecies(nscalars);
       std::string units = pin->GetOrAddString(block, "units", "geometric_solar");
       if (!units.compare("geometric_solar")) {
         ps.GetEOSMutable().SetCodeUnitSystem(Primitive::MakeGeometricSolar());

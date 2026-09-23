@@ -84,6 +84,8 @@ class RadiationM1 {
   DvceArray5D<Real> chi;             // Eddington factor
   DvceArray5D<Real> xi;              // closure flux factor sqrt(H_a H^a)/J (flux hybridisation)
   DvceArray4D<bool> radiation_mask;  // radiation mask
+  // Frozen full-step density selection for feedback, independent of excision.
+  DvceArray4D<bool> coupling_region;
   DvceArray5D<Real> u1;              // evolved variables at intermediate step
   DvceFaceFld5D<Real> uflx;          // fluxes of evo. quantities on cell faces
   DvceArray5D<Real> eta_0;           // number emissivity coefficient
@@ -105,6 +107,8 @@ class RadiationM1 {
   // One-way diagnostic evolution suppresses both configured feedback channels,
   // not emission/absorption in the radiation equations or the radiation state.
   void SetCouplingEnabled(bool enabled) {coupling_enabled_ = enabled;}
+  void SetCouplingRegionEnabled(bool enabled);
+  bool CouplingRegionEnabled() const {return use_coupling_region_;}
 
   // conditional quantities
   DvceArray5D<Real> w0;        // fluid quantities, when MHD is off, unused otherwise 
@@ -148,6 +152,7 @@ class RadiationM1 {
  private:
   bool evolution_enabled_ = true;
   bool coupling_enabled_ = true;
+  bool use_coupling_region_ = false;
   MeshBlockPack* pmy_pack;  // ptr to MeshBlockPack
 };
 

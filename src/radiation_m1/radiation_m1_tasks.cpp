@@ -200,6 +200,16 @@ void RadiationM1::SetEvolutionEnabled(bool enabled) {
   SetMask(nullptr, -1);
 }
 
+// Regional feedback is derived before each full step; it is not an evolution mask.
+void RadiationM1::SetCouplingRegionEnabled(bool enabled) {
+  if (enabled && coupling_region.extent(0) == 0) {
+    Kokkos::realloc(coupling_region, u0.extent(0), u0.extent(2),
+                    u0.extent(3), u0.extent(4));
+    Kokkos::deep_copy(coupling_region, false);
+  }
+  use_coupling_region_ = enabled;
+}
+
 //----------------------------------------------------------------------------------------
 //! \fn TaskList RadiationM1::SendFlux
 //! \brief Wrapper task list function to pack/send restricted values of fluxes

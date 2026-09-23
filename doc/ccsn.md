@@ -225,6 +225,86 @@ mask refresh composes lifecycle disabling with coordinate excision, including
 ghosts and newly active AMR slots, and invalidates closure state. Masked cells
 have E/F/N and chi zeroed. Unmasking and recoupling preserve unexcised moments.
 
+### Opt-in pre-bounce core coupling
+
+`<problem>/prebounce_core_coupling=false` by default. When true, it extends
+recoupling rather than selecting the conservative projection. Merge these keys
+into a suitable CCSN deck with its actual EOS, progenitor, units, opacity backend,
+reaction controls, floors, mesh and output settings:
+
+    <problem>
+    prebounce_core_coupling = true
+    recoupling_approach = true
+    detect_bounce = true
+    bounce_detection_method = entropy
+    deleptonization_method = Liebendoerfer
+    rho_trap = 1.0e12
+    equilibriate_post_bounce = false
+    conservative_bounce_projection = false
+    inject_equilibrium = false
+    update_conserved = false
+
+    <radiation_m1>
+    matter_sources = true
+    backreact = true
+    backreact_tmunu = true
+
+`Simple` is also accepted as the pre-bounce empirical-method spelling. The new
+mode requires dynamical relativistic GRMHD/ADM with CompOSE, exactly one `Ye`
+scalar, four-group number-evolving M1 with an equilibrium-capable opacity backend,
+material collision sources and both material/gravity feedback switches. If Z4c
+evolves spacetime, `backreact_tmunu=true` is required. Projection and equilibrium
+injection are incompatible. `gr_sources` independently controls geometric terms
+in the radiation equation; it is not the radiation-gravity feedback switch.
+Invalid combinations and nonfinite or nonpositive `rho_trap` fail at startup.
+Post-bounce restarts accept the persisted `deleptonization_method=None`.
+
+`rho_trap` is a rest-mass density in g/cm^3 (default `1.0e12`), converted with
+the active code unit system. Immediately before each full explicit step, the
+selection task compares primitive rest density `w0(IDN)` with the converted
+threshold. Equality belongs to the coupled core. This is not a comparison of
+the metric-densitized conserved `D`, an average, a radial cutoff or an optical
+depth. Membership is frozen through hydro, the post-hydro empirical update and
+both M1 split stages. A cell crossing the threshold changes treatment at the
+next full-step selection, not partway through the current step. Excision remains
+a separate *current-time* override and is never frozen into this selection.
+
+| Phase and region | M1 transport/collisions | M1 material feedback | Radiation gravity, when spacetime evolves | Empirical map |
+|---|---|---|---|---|
+| Before bounce, selected (`rho >= rho_trap`) | On | On | On | Off |
+| Before bounce, unselected | On | Off | Off | On |
+| Bounce-detection step | On, unless stopping before split | Frozen regional treatment | Frozen regional treatment | Complement already updated |
+| First following full step and later | On | On in nonexcised cells | On in nonexcised cells | Off |
+| Excised cells | Existing excision handling | Off | Off | Off in this mode |
+
+Fresh runs retain the existing recoupling initialization with zero radiation
+moments; an initially dense core is **not** seeded with an equilibrium reservoir.
+Pre-bounce restarts retain stored moments and select cells from recovered
+primitives at the first pre-integrator task, not from unrecovered restart data.
+After runtime AMR or redistribution, that task reads current blocks and recovered
+primitives again; selection is neither transferred with AMR nor stored in restart.
+The radiation mask and evolved moments are not reset on density crossings.
+
+In this mode the detecting step keeps its regional selection for the remaining
+M1 split. The persisted bounce state disables the empirical map and expands
+feedback throughout the nonexcised domain at the **next** full-step boundary;
+the expansion does not project or clear the moments. By contrast, ordinary
+recoupling still changes its global feedback switch immediately at bounce.
+With `stop_at_bounce=true`, the detecting step finishes its material refresh but
+skips that M1 split. A subsequent restart begins globally coupled from the
+stored radiation and does not replay the skipped split. It is not bitwise
+equivalent to an uninterrupted trajectory.
+
+This regional phase is not globally conservative: exterior radiation collisions
+have no opposite material deposit, and empirical exterior changes do not fill a
+matching neutrino reservoir. Radiation may carry that mismatch into the core;
+global recoupling also changes gravitational sources without a projection.
+Only the accepted local collision increments in selected, nonexcised cells have
+paired material energy, momentum and electron-lepton deposits. A float32 binary
+dump cannot certify those full-precision identities; see the direct native checks
+described in `tst/CCSN_VERIFICATION.md`. A physical improvement or an exactly
+conservative interface is not established by this mode.
+
 ## Bounce stop and restart
 
 `stop_at_bounce=true` terminates after the selected transition and completed

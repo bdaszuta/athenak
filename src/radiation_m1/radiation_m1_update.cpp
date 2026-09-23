@@ -132,6 +132,8 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
   // configured backreaction setting. Recoupling restores only that setting.
   auto params_ = pmy_pack->pradm1->params;
   params_.backreact = params_.backreact && coupling_enabled_;
+  const bool use_region = use_coupling_region_;
+  auto region = coupling_region;
 
   DvceArray5D<Real> w0_ = w0;
   DvceArray5D<Real> umhd0_;
@@ -995,13 +997,16 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
           const Real dFx_actual = dF_actual_d(1);
           const Real dFy_actual = dF_actual_d(2);
           const Real dFz_actual = dF_actual_d(3);
-          if (params_.backreact && stage == 2 && (ismhd_)) {
+          // Transport and collisions remain active outside the frozen core.
+          if (params_.backreact && stage == 2 && ismhd_ &&
+              (!use_region || region(m, k, j, i))) {
             umhd0_(m, IM1, k, j, i) -= dFx_actual;
             umhd0_(m, IM2, k, j, i) -= dFy_actual;
             umhd0_(m, IM3, k, j, i) -= dFz_actual;
           }
         }
-        if (params_.backreact && stage == 2 && ismhd_) {
+        if (params_.backreact && stage == 2 && ismhd_ &&
+            (!use_region || region(m, k, j, i))) {
           // Apply net E/Q once, using the same order and electron signs as [G].
           // Canceling species exchange must not round through intermediate
           // material states before it is combined.
