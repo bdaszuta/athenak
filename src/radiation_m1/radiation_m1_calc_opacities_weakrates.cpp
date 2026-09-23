@@ -15,6 +15,7 @@
 #include "dyn_grmhd/dyn_grmhd.hpp"
 #include "eos/primitive-solver/unit_system.hpp"
 #include "radiation_m1/radiation_m1.hpp"
+#include "radiation_m1/radiation_m1_helpers.hpp"
 #include "radiation_m1/radiation_m1_weakrates.hpp"
 
 namespace radiationm1 {
@@ -360,6 +361,9 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
         // abs_1_loc[1] += (neq_1_loc[1] > 0.0)
         //                   ? raw.eta_1_non_cc[weakrates::kAntiNuE]/neq_1_loc[1] : 0.0;
 
+        // The non-LTE factor uses each evolved group's mean energy. Although
+        // the heavy emissivity starts from one channel, the corrected rates
+        // and the absorption coefficients inferred below can differ by group.
         // Apply the non-LTE E_nu^2 correction from the actual M1 mean energy. The factor
         // is referenced to the local matter equilibrium, which is the state every raw
         // coefficient above was evaluated at. The Kirchhoff closure further down is a
@@ -416,28 +420,28 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
         Real ye_star = ye;
         if (point_finite && weakrates_params_.use_partial_equilibrium) {
           const Real dtau = dt_*adm.alpha(m, k, j, i)/w_lorentz;
-          const Real j_x = nudens_1[2] + nudens_1[3];
-          const Real kj_x =
-              abs_1_loc[2]*nudens_1[2] + abs_1_loc[3]*nudens_1[3];
-          const Real ks_x = abs_1_loc[2] + abs_1_loc[3];
-          const Real kbar_1x = (j_x > 0.0) ? kj_x/j_x : 0.5*ks_x;
+          // Only equal heavy equilibrium densities share the EOS coefficient.
+          // Current densities keep the weights of their own inferred opacities.
+          Real w_12, w_13, w_1x;
+          partial_equilibrium_heavy_weights(dtau, abs_1_loc[2], abs_1_loc[3],
+                                            nspecies_, w_12, w_13, w_1x);
           const Real a_1p = dtau*abs_1_loc[0];
           const Real a_1m = dtau*abs_1_loc[1];
-          const Real a_1x = dtau*kbar_1x;
           const Real a_0p = dtau*abs_0_loc[0];
           const Real a_0m = dtau*abs_0_loc[1];
           const Real w_1p = a_1p/(1.0 + a_1p);
           const Real w_1m = a_1m/(1.0 + a_1m);
-          const Real w_1x = a_1x/(1.0 + a_1x);
           const Real w_0p = a_0p/(1.0 + a_0p);
           const Real w_0m = a_0m/(1.0 + a_0m);
           const bool weights_finite = Kokkos::isfinite(w_1p) &&
                                       Kokkos::isfinite(w_1m) &&
-                                      Kokkos::isfinite(w_1x) &&
+                                      Kokkos::isfinite(w_12) &&
+                                      Kokkos::isfinite(w_13) &&
                                       Kokkos::isfinite(w_0p) &&
                                       Kokkos::isfinite(w_0m);
           Real w_max = (w_1p > w_1m) ? w_1p : w_1m;
-          w_max = (w_max > w_1x) ? w_max : w_1x;
+          w_max = (w_max > w_12) ? w_max : w_12;
+          w_max = (w_max > w_13) ? w_max : w_13;
           w_max = (w_max > w_0p) ? w_max : w_0p;
           w_max = (w_max > w_0m) ? w_max : w_0m;
 
@@ -453,11 +457,15 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
                        eos.GetEnergy(nb, t_lo, y_part))/(t_hi - t_lo)
                     : 0.0;
             const bool cv_ok = Kokkos::isfinite(cv_heat) && cv_heat > 0.0;
-            const Real j_x_eq = neq_1_loc[2] + neq_1_loc[3];
+            // Opposing heavy departures can cancel as a sum, but still
+            // contribute separately to the matter-energy excursion bound.
+            const Real dJ_x_hat =
+                w_12*Kokkos::fabs(neq_1_loc[2] - nudens_1[2]) +
+                w_13*Kokkos::fabs(neq_1_loc[3] - nudens_1[3]);
             const Real dlnT_hat =
                 cv_ok ? (w_1p*Kokkos::fabs(neq_1_loc[0] - nudens_1[0]) +
                          w_1m*Kokkos::fabs(neq_1_loc[1] - nudens_1[1]) +
-                         w_1x*Kokkos::fabs(j_x_eq - j_x))/(temp*cv_heat)
+                         dJ_x_hat)/(temp*cv_heat)
                       : 0.0;
             const Real dYe_hat =
                 (w_0p*Kokkos::fabs(neq_0_loc[0] - nudens_0[0]) +
@@ -481,9 +489,12 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
                 const Real weights[PEQ_NWEIGHTS] = {
                     soften*w_1p, soften*w_1m, soften*w_1x,
                     soften*w_0p, soften*w_0m};
+                // The EOS mean multiplies the equal equilibrium densities;
+                // each current heavy density still has its own softened weight.
                 const Real e_rhs = e_mat + weights[PEQ_W1_NUE]*nudens_1[0] +
                                    weights[PEQ_W1_ANUE]*nudens_1[1] +
-                                   weights[PEQ_W1_X]*j_x;
+                                   soften*(w_12*nudens_1[2] +
+                                           w_13*nudens_1[3]);
                 Real yl_rhs[3] = {
                     ye + (weights[PEQ_W0_NUE]*nudens_0[0] -
                           weights[PEQ_W0_ANUE]*nudens_0[1])/nb, 0.0, 0.0};
