@@ -461,8 +461,9 @@ void Driver::ExecuteTaskList(Mesh *pm, std::string tl, int stage) {
 //  outputting ICs, and computing initial time step
 
 void Driver::Initialize(Mesh *pmesh, ParameterInput *pin, Outputs *pout, bool res_flag) {
-  //---- Step 1.  Set conserved variables in ghost zones for all physics
-  InitBoundaryValuesAndPrimitives(pmesh);
+  // Refresh inter-block halos, but retain the checkpointed Z4c physical ghosts on
+  // initial restart. They already include the end-of-step algebraic projection.
+  InitBoundaryValuesAndPrimitives(pmesh, res_flag);
 
   // Synchronize the M1 excision mask before the first explicit GR stage.
   MeshBlockPack *pmbp = pmesh->pmb_pack;
@@ -780,10 +781,12 @@ Real Driver::UpdateWallClock() {
 
 //----------------------------------------------------------------------------------------
 //! \fn Driver::InitBoundaryValuesAndPrimitives()
-//! \brief Sets boundary conditions on conserved and initializes primitives.  Used both
-//! on initialization, and when new MBs created with AMR.
+//! \brief Sets boundary conditions on conserved and initializes primitives. Used on
+//! initialization and after AMR. Only the initial restart preserves saved Z4c
+//! physical ghosts; new mesh blocks still require their physical BCs.
 
-void Driver::InitBoundaryValuesAndPrimitives(Mesh *pm) {
+void Driver::InitBoundaryValuesAndPrimitives(Mesh *pm,
+                                              bool preserve_restart_z4c_ghosts) {
   // Note: with MPI, sends on ALL MBs must be complete before receives execute
 
   // Initialize Z4c
@@ -797,7 +800,11 @@ void Driver::InitBoundaryValuesAndPrimitives(Mesh *pm) {
     (void) pz4c->RecvU(this, 0);
     (void) pz4c->Z4cBoundaryRHS(this, 0);
     (void) pz4c->Prolongate(this, 0); // coarse grid BCs and prolongation
-    (void) pz4c->ApplyPhysicalBCs(this, 0); // fine grid BCs
+    if (!preserve_restart_z4c_ghosts) {
+      // Saved physical ghosts include AlgConstr; extrapolating them here would
+      // replace the checkpointed state before the first restarted RHS stencil.
+      (void) pz4c->ApplyPhysicalBCs(this, 0);
+    }
     if (pm->pmb_pack->pcoord->coord_data.bh_excise) {
       pm->pmb_pack->pcoord->UpdateExcisionMasks();
     }
