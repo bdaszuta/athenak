@@ -95,6 +95,10 @@ class RadiationM1 {
   DvceArray5D<Real> scat_1;          // energy scattering coefficient
   // Empty unless gra_source_dispatch is enabled; frozen at stage 1 each cycle.
   DvceArray5D<int> source_regime;
+  // Stage-held undensitized r, q, B_N,0, B_N,1, B_E,0, B_E,1; field indices
+  // are weakrates::ThermalFieldIndex. Empty outside option-enabled WEAKRATES.
+  // No coarse, communication, restart, or output counterpart is required.
+  DvceArray5D<Real> weakrates_thermal;
 
   MeshBoundaryValuesCC* pbval_u;  // Communication buffers and functions for u
   RadiationM1TaskIDs id;          // container to hold names of TaskIDs

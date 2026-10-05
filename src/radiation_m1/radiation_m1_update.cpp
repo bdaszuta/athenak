@@ -20,6 +20,7 @@
 #include "radiation_m1_helpers.hpp"
 #include "radiation_m1_nurates.hpp"
 #include "radiation_m1_sources.hpp"
+#include "radiation_m1_weakrates_thermal.hpp"
 #include "radiation_m1_closure.hpp"
 #include "z4c/z4c.hpp"
 
@@ -120,6 +121,10 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
   auto &eta_1_ = eta_1;
   auto &abs_1_ = abs_1;
   auto &scat_1_ = scat_1;
+  auto thermal_ = weakrates_thermal;
+  // Construction-time WEAKRATES option: an empty View is never indexed off-path.
+  const bool thermal_enabled = params.opacity_type == WeakRates &&
+                               weakrates_params.use_electron_thermal_emission;
 
   auto &mbsize = pmy_pack->pmb->mb_size;
   auto &nvars_ = nvars;
@@ -461,8 +466,89 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
           }
         }
         Real theta{};
+        bool thermal_active = false;
+        weakrates::ElectronThermalSourceResult thermal_result{};
         if (params_.matter_sources) {
+          if (thermal_enabled && params_.source_limiter != 0.0) {
+            weakrates::ElectronThermalSourceInput input{};
+            input.thermal.r = thermal_(m, weakrates::kThermalNumberRate, k, j, i);
+            input.thermal.q = thermal_(m, weakrates::kThermalEnergyRate, k, j, i);
+            if (!Kokkos::isfinite(input.thermal.r) || input.thermal.r < 0.0 ||
+                !Kokkos::isfinite(input.thermal.q) || input.thermal.q < 0.0) {
+              Kokkos::printf("WEAKRATES electron thermal InvalidInput: "
+                             "cell=(%d,%d,%d,%d), stage=%d\n", m, k, j, i, stage);
+              Kokkos::abort("WEAKRATES electron thermal invalid stored rates");
+            }
+            thermal_active = input.thermal.r > 0.0 || input.thermal.q > 0.0;
+            if (thermal_active) {
+              if (!source_step_is_finite) {
+                Kokkos::printf("WEAKRATES electron thermal GlobalInvalidation: "
+                               "cell=(%d,%d,%d,%d), stage=%d\n", m, k, j, i, stage);
+                Kokkos::abort("WEAKRATES electron thermal invalid predictor");
+              }
+              input.volume = volform;
+              input.thermal.number[0] =
+                  thermal_(m, weakrates::kThermalNumberNuE, k, j, i);
+              input.thermal.number[1] =
+                  thermal_(m, weakrates::kThermalNumberAntiNuE, k, j, i);
+              input.thermal.energy[0] =
+                  thermal_(m, weakrates::kThermalEnergyNuE, k, j, i);
+              input.thermal.energy[1] =
+                  thermal_(m, weakrates::kThermalEnergyAntiNuE, k, j, i);
+              // Both records refer to these caller-owned tensors until the
+              // coupled helper returns. Emission is densitized exactly once.
+              AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Fstar_d[2]{};
+              for (int s = 0; s < 2; ++s) {
+                pack_F_d(beta_u(1), beta_u(2), beta_u(3),
+                         source_base[s][M1_FX_IDX], source_base[s][M1_FY_IDX],
+                         source_base[s][M1_FZ_IDX], Fstar_d[s]);
+                input.number_star[s] = source_base[s][M1_N_IDX];
+                input.eta_number_cc[s] = eta_0_(m, s, k, j, i);
+                input.abs_number_cc[s] = abs_0_(m, s, k, j, i);
+                if (params_.src_update == Explicit) {
+                  for (int a = 0; a < 4; ++a) {
+                    input.explicit_moment[s][a] =
+                        u0_(m, CombinedIdx(s, a, nvars_), k, j, i);
+                  }
+                  input.explicit_number[s] =
+                      u0_(m, CombinedIdx(s, M1_N_IDX, nvars_), k, j, i);
+                }
+              }
+              SrcParams electron[2] = {
+                  SrcParams(beta_dt, adm.alpha(m, k, j, i), g_dd, g_uu, n_d, n_u,
+                            gamma_ud, u_d, u_u, v_d, v_u, proj_ud, w_lorentz,
+                            source_base[0][M1_E_IDX], Fstar_d[0],
+                            chi_(m, 0, k, j, i), volform * eta_1_(m, 0, k, j, i),
+                            abs_1_(m, 0, k, j, i), scat_1_(m, 0, k, j, i)),
+                  SrcParams(beta_dt, adm.alpha(m, k, j, i), g_dd, g_uu, n_d, n_u,
+                            gamma_ud, u_d, u_u, v_d, v_u, proj_ud, w_lorentz,
+                            source_base[1][M1_E_IDX], Fstar_d[1],
+                            chi_(m, 1, k, j, i), volform * eta_1_(m, 1, k, j, i),
+                            abs_1_(m, 1, k, j, i), scat_1_(m, 1, k, j, i))};
+              if (!weakrates::UpdateElectronThermalSources(
+                      BrentFunc_, electron, input, params_, thermal_result)) {
+                Kokkos::printf("WEAKRATES electron thermal %s: "
+                               "cell=(%d,%d,%d,%d), stage=%d\n",
+                               weakrates::ElectronThermalFailureName(
+                                   thermal_result.failure), m, k, j, i, stage);
+                Kokkos::abort("WEAKRATES electron thermal source failure");
+              }
+              // The pair exchange starts at the repaired baseline, not at its
+              // raw transport predictor. Input repairs are not pair sources.
+              for (int s = 0; s < 2; ++s) {
+                for (int a = 0; a < 4; ++a) {
+                  source_pred[s][a] = source_base[s][a];
+                  DrEFN[s][a] = thermal_result.moment[s][a] - source_base[s][a];
+                }
+                source_pred[s][M1_N_IDX] = source_base[s][M1_N_IDX];
+                DrEFN[s][M1_N_IDX] =
+                    thermal_result.number[s] - source_base[s][M1_N_IDX];
+                chi_(m, s, k, j, i) = thermal_result.chi[s];
+              }
+            }
+          }
           for (int nuidx = 0; nuidx < nspecies_; nuidx++) {
+            if (thermal_active && nuidx < 2) continue;
             bool source_coeffs_are_finite =
                 Kokkos::isfinite(volform * eta_1_(m, nuidx, k, j, i)) &&
                 Kokkos::isfinite(abs_1_(m, nuidx, k, j, i)) &&
@@ -892,6 +978,42 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
 
           source_step_is_finite =
               source_step_is_finite && Kokkos::isfinite(theta);
+          if (thermal_active && source_step_is_finite) {
+            // One acceptance factor for both electron species and all moments.
+            // The physical root may be subfloor; limit its exchange, not its
+            // independently stored pair counts. Keep the gross limiter above.
+            for (int s = 0; s < 2; ++s) {
+              for (int v = 0; v < 2; ++v) {
+                const int a = (v == 0) ? M1_E_IDX : M1_N_IDX;
+                const Real floor = (v == 0) ? params_.rad_E_floor : params_.rad_N_floor;
+                if (DrEFN[s][a] < 0.0) {
+                  theta = Kokkos::fmin(theta,
+                      (source_base[s][a] - floor) / (-DrEFN[s][a]));
+                }
+              }
+            }
+            theta = Kokkos::fmax(0.0, Kokkos::fmin(1.0, theta));
+            bool pair_candidate_is_safe = theta == 0.0;
+            for (int attempt = 0; attempt < 32 && !pair_candidate_is_safe; ++attempt) {
+              pair_candidate_is_safe = true;
+              for (int s = 0; s < 2; ++s) {
+                const Real E = source_base[s][M1_E_IDX] + theta * DrEFN[s][M1_E_IDX];
+                const Real N = source_base[s][M1_N_IDX] + theta * DrEFN[s][M1_N_IDX];
+                AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> F_d{};
+                pack_F_d(beta_u(1), beta_u(2), beta_u(3),
+                         source_base[s][M1_FX_IDX] + theta * DrEFN[s][M1_FX_IDX],
+                         source_base[s][M1_FY_IDX] + theta * DrEFN[s][M1_FY_IDX],
+                         source_base[s][M1_FZ_IDX] + theta * DrEFN[s][M1_FZ_IDX], F_d);
+                const Real F2 = tensor_dot(g_uu, F_d, F_d);
+                pair_candidate_is_safe = pair_candidate_is_safe &&
+                    radiation_state_is_finite(g_uu, E, F_d) && Kokkos::isfinite(N) &&
+                    E >= params_.rad_E_floor && N >= params_.rad_N_floor &&
+                    F2 <= E * E * (1.0 - params_.rad_eps);
+              }
+              if (!pair_candidate_is_safe) theta *= 0.5;
+            }
+            if (!pair_candidate_is_safe) theta = 0.0;
+          }
           if (source_step_is_finite) {
             for (int nuidx = 0; nuidx < nspecies_; ++nuidx) {
               const Real Ecandidate = source_pred[nuidx][M1_E_IDX] +
@@ -918,6 +1040,11 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
             }
           }
           if (!source_step_is_finite) {
+            if (thermal_active) {
+              Kokkos::printf("WEAKRATES electron thermal GlobalInvalidation: "
+                             "cell=(%d,%d,%d,%d), stage=%d\n", m, k, j, i, stage);
+              Kokkos::abort("WEAKRATES electron thermal step discarded by finite check");
+            }
             theta = 0.0;
           }
         } else {
@@ -955,7 +1082,24 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
             pack_F_d(adm.beta_u(m, 0, k, j, i),
                      adm.beta_u(m, 1, k, j, i),
                      adm.beta_u(m, 2, k, j, i), Fxf, Fyf, Fzf, Fcandidate_d);
-            apply_floor(g_uu, Ecandidate, Fcandidate_d, params_);
+            if (thermal_active && nuidx < 2) {
+              // Any independent repair here would alter the accepted pair
+              // exchange. The common guard must have made it a strict no-op.
+              const Real Ebefore = Ecandidate;
+              const auto Fbefore_d = Fcandidate_d;
+              apply_floor(g_uu, Ecandidate, Fcandidate_d, params_);
+              bool unchanged = Ecandidate == Ebefore;
+              for (int a = 0; a < 4; ++a) {
+                unchanged = unchanged && Fcandidate_d(a) == Fbefore_d(a);
+              }
+              if (!unchanged) {
+                Kokkos::printf("WEAKRATES electron thermal AcceptanceFailure: "
+                               "cell=(%d,%d,%d,%d), stage=%d\n", m, k, j, i, stage);
+                Kokkos::abort("WEAKRATES electron thermal independent moment repair");
+              }
+            } else {
+              apply_floor(g_uu, Ecandidate, Fcandidate_d, params_);
+            }
           }
 
           Real Ef{}, dE_actual{};
@@ -964,9 +1108,16 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
                                   Fcandidate_d, Ef, Ff_d, dE_actual, dF_actual_d);
 
           AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> Pfinal_dd{};
-          calc_closure(BrentFunc_, g_dd, g_uu, n_d, w_lorentz, u_u, v_d,
-                       proj_ud, Ef, Ff_d, chi_(m, nuidx, k, j, i), Pfinal_dd,
-                       params_, params_.closure_type);
+          const MathSignal final_closure_status =
+              calc_closure(BrentFunc_, g_dd, g_uu, n_d, w_lorentz, u_u, v_d,
+                           proj_ud, Ef, Ff_d, chi_(m, nuidx, k, j, i), Pfinal_dd,
+                           params_, params_.closure_type);
+          if (thermal_active && nuidx < 2 && final_closure_status != LinalgSuccess) {
+            Kokkos::printf("WEAKRATES electron thermal AcceptanceFailure: "
+                           "final closure cell=(%d,%d,%d,%d), stage=%d\n",
+                           m, k, j, i, stage);
+            Kokkos::abort("WEAKRATES electron thermal final closure failure");
+          }
 
           u0_(m, CombinedIdx(nuidx, M1_E_IDX, nvars_), k, j, i) = Ef;
           u0_(m, CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, i) = Ff_d(1);
@@ -978,9 +1129,28 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
             const Real Nbase = source_base[nuidx][M1_N_IDX];
             Real Nf = Nbase;
             if (apply_source_step) {
-              Nf = floor_number(source_pred[nuidx][M1_N_IDX] +
-                                    theta * DrEFN[nuidx][M1_N_IDX],
-                                params_);
+              const Real Ncandidate = source_pred[nuidx][M1_N_IDX] +
+                                      theta * DrEFN[nuidx][M1_N_IDX];
+              if (thermal_active && nuidx < 2) {
+                Nf = Ncandidate;
+                const Real attributed = theta *
+                    (thermal_result.cc_number_increment[nuidx] +
+                     thermal_result.pair_number_increment);
+                const Real number_residual = Nf - Nbase - attributed;
+                const Real number_tolerance = params_.source_epsabs +
+                    params_.source_epsrel * Kokkos::fmax(Kokkos::fabs(Nf),
+                                                       Kokkos::fabs(Nbase));
+                if (!Kokkos::isfinite(Nf) || Nf < params_.rad_N_floor ||
+                    !Kokkos::isfinite(number_residual) ||
+                    Kokkos::fabs(number_residual) > number_tolerance) {
+                  Kokkos::printf("WEAKRATES electron thermal AcceptanceFailure: "
+                                 "number cell=(%d,%d,%d,%d), stage=%d\n",
+                                 m, k, j, i, stage);
+                  Kokkos::abort("WEAKRATES electron thermal number attribution failure");
+                }
+              } else {
+                Nf = floor_number(Ncandidate, params_);
+              }
             }
             dN_actual = Nf - Nbase;
             u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i) = Nf;
@@ -1001,11 +1171,27 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
         if (params_.backreact && stage == 2 && ismhd_) {
           // Apply net E/Q once, using the same order and electron signs as [G].
           // Canceling species exchange must not round through intermediate
-          // material states before it is combined.
+          // material states before it is combined. Thermal electron-lepton
+          // feedback uses the cached CC attribution below instead.
           umhd0_(m, IEN, k, j, i) -= dE_source;
-          if (nspecies_ > 1) {
+          if (nspecies_ > 1 && !thermal_active) {
             umhd0_(m, IYF, k, j, i) += mb * (dN_electron[1] - dN_electron[0]);
           }
+        }
+        if (thermal_active && apply_source_step && params_.backreact &&
+            stage == 2 && ismhd_) {
+          // CC attribution is cached at the unlimited solve/evaluation state.
+          // The common pair increment cancels; do not subtract two rounded
+          // pair populations or reevaluate CC after limiting.
+          const Real lepton_increment = mb * theta *
+              (thermal_result.cc_number_increment[1] -
+               thermal_result.cc_number_increment[0]);
+          if (!Kokkos::isfinite(lepton_increment)) {
+            Kokkos::printf("WEAKRATES electron thermal AcceptanceFailure: "
+                           "lepton cell=(%d,%d,%d,%d), stage=%d\n", m, k, j, i, stage);
+            Kokkos::abort("WEAKRATES electron thermal nonfinite lepton feedback");
+          }
+          umhd0_(m, IYF, k, j, i) += lepton_increment;
         }
       });
   return TaskStatus::complete;

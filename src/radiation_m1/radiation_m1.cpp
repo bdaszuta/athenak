@@ -176,6 +176,14 @@ RadiationM1::RadiationM1(MeshBlockPack *ppack, ParameterInput *pin)
     weakrates_params.peq_dYe_tol =
         pin->GetOrAddReal("weakrates", "peq_dYe_tol", 1.0e-4);
 
+    // Omitted and true enable the separate electron thermal operator; false
+    // disables its entire producer/storage/consumer path, not the heavy fix.
+    // Read only for WEAKRATES at construction, including the existing restart
+    // input/override rules: an absent restart key defaults on. No live toggle or
+    // new restart field is introduced; explicitly use false for legacy electrons.
+    weakrates_params.use_electron_thermal_emission =
+        pin->GetOrAddBoolean("weakrates", "use_electron_thermal_emission", true);
+
     if (!std::isfinite(weakrates_params.rho_min_cgs) ||
         !std::isfinite(weakrates_params.temp_min_mev) ||
         !std::isfinite(weakrates_params.opacity_corr_fac_max) ||
@@ -393,6 +401,17 @@ RadiationM1::RadiationM1(MeshBlockPack *ppack, ParameterInput *pin)
   // No allocation or kernel accesses on the legacy path.
   if (params.gra_source_dispatch) {
     Kokkos::realloc(source_regime, nmb, nspecies, ncells3, ncells2, ncells1);
+  }
+
+  // Match the producer/consumer backend-option gate. Default construction leaves
+  // the View empty for disabled WEAKRATES and every other backend. These six
+  // stage-held fields share the original coefficient mesh-capacity convention.
+  const bool thermal_enabled = params.opacity_type == WeakRates &&
+                               weakrates_params.use_electron_thermal_emission;
+  if (thermal_enabled) {
+    weakrates_thermal = DvceArray5D<Real>(
+        "weakrates_thermal", nmb, weakrates::kNumThermalFields, ncells3, ncells2,
+        ncells1);
   }
 
   // radiation mask

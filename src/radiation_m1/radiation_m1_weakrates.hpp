@@ -28,6 +28,9 @@ struct WeakRatesParams {
   Real peq_dlnT_tol;
   Real peq_dYe_tol;
   bool use_partial_equilibrium;
+  // Construction-time, default-on separate electron thermal source operator.
+  // False retains legacy electron sources while preserving the heavy finalizer.
+  bool use_electron_thermal_emission = true;
 };
 static_assert(std::is_trivially_copyable<WeakRatesParams>::value,
               "WeakRatesParams must be device-copyable");
@@ -35,6 +38,28 @@ static_assert(std::is_trivially_copyable<WeakRatesParams>::value,
 namespace weakrates {
 
 enum SpeciesIndex { kNuE = 0, kAntiNuE = 1, kNuX = 2, kNumRateSpecies = 3 };
+
+// Field indices in the stage-held thermal View, not transport-species indices.
+enum ThermalFieldIndex {
+  kThermalNumberRate = 0,
+  kThermalEnergyRate = 1,
+  kThermalNumberNuE = 2,
+  kThermalNumberAntiNuE = 3,
+  kThermalEnergyNuE = 4,
+  kThermalEnergyAntiNuE = 5,
+  kNumThermalFields = 6
+};
+
+//! Undensitized electron thermal rates and selected equilibrium references.
+//! r counts pairs in EOS number-density units/code time; q is per-species code
+//! energy density/code time. number and energy hold EOS number densities and
+//! code energy densities for the two electron transport slots, respectively.
+struct ElectronThermalCoefficients {
+  Real r, q;
+  Real number[2], energy[2];
+};
+static_assert(std::is_trivially_copyable<ElectronThermalCoefficients>::value,
+              "ElectronThermalCoefficients must be device-copyable");
 
 //! Local thermodynamic state in the CGS/MeV convention of the rate formulas.
 struct State {
@@ -60,9 +85,9 @@ struct RawCoefficients {
   Real eta_0[kNumRateSpecies];         // cm^-3 s^-1
   Real eta_1[kNumRateSpecies];         // erg cm^-3 s^-1
   // Non-charged-current emission (pair, plasmon, bremsstrahlung), cm^-3 s^-1 and
-  // erg cm^-3 s^-1. Reported for diagnostics only: the grey closure derives the
-  // electronic emissivity from the charged-current opacity by Kirchhoff's law and
-  // consumes no entry of this family.
+  // erg cm^-3 s^-1 before conversion. Electron entries are consumed only by the
+  // enabled separate thermal operator; CC emissivity is reconstructed from CC
+  // opacity by Kirchhoff's law. Heavy emission still uses the total raw rates.
   Real eta_0_non_cc[kNumRateSpecies];
   Real eta_1_non_cc[kNumRateSpecies];
   Real abs_0[kNumRateSpecies];         // cm^-1
@@ -340,6 +365,83 @@ void ConvertToCodeUnits(const UnitConversions &units, EquilibriumDensities &dens
     densities.number[s] /= units.number_cgs_per_eos;
     densities.energy[s] /= units.energy_cgs_per_code;
   }
+}
+
+//! Finalize species-dependent Kirchhoff coefficients at the selected target.
+//! All arrays are caller-owned with at least nspecies entries; read-only targets
+//! must not alias mutable coefficients. Targets use EOS number-density/code
+//! energy-density units, emissivities those units/code time, and absorption and
+//! scattering inverse code length (code light speed is unity). Electron absorption
+//! is an input and electron emission an output. Corrected heavy emission is an
+//! input; provisional predictor absorption is replaced independently per channel.
+//! Finite nonnegative targets are validated by the caller. A zero target gives
+//! zero inferred heavy absorption without changing emission or adding a floor.
+//! Nonfinite quotients remain visible; the returned flag accumulates prior and
+//! final invalidity for the caller's unchanged cell-wide policy, without clipping.
+KOKKOS_INLINE_FUNCTION
+bool FinalizeKirchhoffCoefficients(
+    const int nspecies, bool point_finite, const Real neq_0_star[],
+    const Real neq_1_star[], Real eta_0_loc[], Real eta_1_loc[], Real abs_0_loc[],
+    Real abs_1_loc[], const Real scat_1_loc[]) {
+  for (int s = 0; s < nspecies; ++s) {
+    if (s < 2) {
+      eta_0_loc[s] = abs_0_loc[s]*neq_0_star[s];
+      eta_1_loc[s] = abs_1_loc[s]*neq_1_star[s];
+    } else {
+      abs_0_loc[s] = (neq_0_star[s] > 0.0) ? eta_0_loc[s]/neq_0_star[s] : 0.0;
+      abs_1_loc[s] = (neq_1_star[s] > 0.0) ? eta_1_loc[s]/neq_1_star[s] : 0.0;
+    }
+    point_finite = point_finite && Kokkos::isfinite(eta_0_loc[s]) &&
+                   Kokkos::isfinite(eta_1_loc[s]) &&
+                   Kokkos::isfinite(abs_0_loc[s]) &&
+                   Kokkos::isfinite(abs_1_loc[s]) &&
+                   Kokkos::isfinite(scat_1_loc[s]);
+  }
+  return point_finite;
+}
+
+//! Build the separate grey pair operator from converted, uncorrected raw rates.
+//! For partner p=1-s, its model is R=r*(1-(n_0/B_N,0)*(n_1/B_N,1)),
+//! lambda_s=(q/B_E,s)*(n_p/B_N,p), and
+//! G_s^mu=(q-lambda_s*J_s)*u^mu-lambda_s*H_s^mu. Each species receives
+//! the same pair count R and energy emission q, without a heavy split factor.
+//! These are phenomenological moment closures, not a microscopic inverse kernel.
+//! The frozen-coefficient fixed point is n_s=B_N,s, J_s=B_E,s, H_s^mu=0.
+//! References are the already-selected target; the unchanged predictor excludes
+//! pair cooling. The frozen-target fixed point is not a joint finite-step matter
+//! equilibrium. Raw pair/plasmon rates retain matter-equilibrium blocking estimates;
+//! bremsstrahlung retains its different blocking convention. Add no evolved
+//! blocking factor and do not apply mean-energy corrections to r or q. This model
+//! does not add pair damping to transport absorption or its diffusion correction.
+//! Caller-owned target arrays have at least two entries and are copied, not
+//! recomputed. Zero rates skip source divisions; positive rates require references.
+//! On failure out remains unchanged: the enabled producer owns diagnosis/abort.
+KOKKOS_INLINE_FUNCTION
+bool BuildElectronThermalCoefficients(
+    const RawCoefficients &raw, const Real neq_0_star[], const Real neq_1_star[],
+    ElectronThermalCoefficients &out) {
+  ElectronThermalCoefficients candidate{};
+  candidate.r = raw.eta_0_non_cc[kNuE];
+  candidate.q = raw.eta_1_non_cc[kNuE];
+  if (!Kokkos::isfinite(candidate.r) || candidate.r < 0.0 ||
+      !Kokkos::isfinite(candidate.q) || candidate.q < 0.0 ||
+      candidate.r != raw.eta_0_non_cc[kAntiNuE] ||
+      candidate.q != raw.eta_1_non_cc[kAntiNuE]) {
+    return false;
+  }
+  for (int s = 0; s < 2; ++s) {
+    candidate.number[s] = neq_0_star[s];
+    candidate.energy[s] = neq_1_star[s];
+    if (!Kokkos::isfinite(candidate.number[s]) || candidate.number[s] < 0.0 ||
+        !Kokkos::isfinite(candidate.energy[s]) || candidate.energy[s] < 0.0 ||
+        ((candidate.r > 0.0 || candidate.q > 0.0) &&
+         candidate.number[s] <= 0.0) ||
+        (candidate.q > 0.0 && candidate.energy[s] <= 0.0)) {
+      return false;
+    }
+  }
+  out = candidate;
+  return true;
 }
 
 }  // namespace weakrates

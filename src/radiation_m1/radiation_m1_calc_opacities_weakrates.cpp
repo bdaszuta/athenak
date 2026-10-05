@@ -47,7 +47,7 @@ TaskStatus RadiationM1::CalcOpacityWeakRates(Driver *pdrive, int stage) {
 }
 
 //----------------------------------------------------------------------------------------
-//! \brief Evaluate weakrates and publish the five M1 coefficient fields.
+//! \brief Publish five M1 coefficients and the option-enabled thermal fields.
 template <class EOSPolicy, class ErrorPolicy>
 TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
   assert(nspecies == M1_TOTAL_NUM_SPECIES);
@@ -70,12 +70,15 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
   auto &radiation_mask_ = radiation_mask;
   auto &m1_params_ = params;
   const WeakRatesParams weakrates_params_ = weakrates_params;
+  const bool thermal_enabled = params.opacity_type == WeakRates &&
+                               weakrates_params_.use_electron_thermal_emission;
 
   auto &eta_0_ = eta_0;
   auto &abs_0_ = abs_0;
   auto &eta_1_ = eta_1;
   auto &abs_1_ = abs_1;
   auto &scat_1_ = scat_1;
+  auto weakrates_thermal_ = weakrates_thermal;
   auto &u0_ = u0;
   auto &chi_ = chi;
 
@@ -124,6 +127,14 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
       "radiation_m1_calc_opacity_weakrates", DevExeSpace(), 0, nmb1, ks_op, ke_op,
       js_op, je_op, is_op, ie_op,
       KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+        // Clear only evaluated cells before any early return, so mask/cutoff or
+        // original microscopic invalidity cannot retain older thermal data.
+        // The off-path View is empty and must never be indexed, even to zero it.
+        if (thermal_enabled) {
+          for (int f = 0; f < weakrates::kNumThermalFields; ++f) {
+            weakrates_thermal_(m, f, k, j, i) = 0.0;
+          }
+        }
         if (radiation_mask_(m, k, j, i)) {
           for (int s = 0; s < nspecies_; ++s) {
             eta_0_(m, s, k, j, i) = 0.0;
@@ -301,8 +312,8 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
         Real neq_0_loc[M1_TOTAL_NUM_SPECIES]{};
         Real neq_1_loc[M1_TOTAL_NUM_SPECIES]{};
 
-        // The electronic emissivity is not taken from the raw coefficients: the
-        // Kirchhoff rebuild below overwrites these two slots for every species.
+        // Electron CC emissivity is reconstructed only in transport slots 0 and 1
+        // from corrected CC absorption. Non-CC emission is published separately.
         // Kept commented out as reference.
         // eta_0_loc[0] = raw.eta_0[weakrates::kNuE];
         // eta_0_loc[1] = raw.eta_0[weakrates::kAntiNuE];
@@ -330,28 +341,28 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
           neq_1_loc[s] = heavy_split*local_eq.energy[weakrates::kNuX];
         }
 
-        // Kirchhoff closure. The grey scheme carries one emissivity/opacity pair per
-        // channel, so one member of the pair is the microscopic input and the other
-        // follows from Kirchhoff's law at the local equilibrium. Which member is the
-        // input depends on the channel kind:
+        // Species-dependent Kirchhoff closure retains the microscopic input and
+        // derives its partner coefficient. Local equilibrium supplies provisional
+        // heavy absorption only for the unchanged predictor; final closure uses
+        // the selected equilibrium target:
         //
         //   charged-current (nue, anua): the microphysics supplies the opacity
-        //     (Bruenn-85 absorption); the non-LTE factor below scales that opacity and
-        //     the emissivity follows from eta = kappa * n_eq at the partial-equilibrium
-        //     state;
+        //     (Bruenn-85 absorption); the non-LTE factor scales it and final
+        //     emissivity follows from eta = kappa * n_eq at the selected target;
         //   emission-only (the heavy-lepton channel, which has no charged current at
         //     all): the microphysics supplies the emissivity; the factor scales that
-        //     emissivity and the opacity follows from kappa = eta / n_eq.
+        //     emissivity. Preserve that emission and infer final kappa = eta / n_eq
+        //     at the selected target after prediction.
         //
         // Pair, plasmon and bremsstrahlung emission for nue/anua has no charged-current
-        // counterpart, so this closure cannot recover it from the opacity and it is not
-        // carried here: adding its emissivity over n_eq to the opacity would install an
+        // counterpart, so CC closure cannot recover it from the opacity. The enabled
+        // separate thermal operator carries it with partner-dependent inverse losses;
+        // adding its emissivity over n_eq to transport opacity would install an
         // emission rate as an absorption length, and the transport operator would then
         // trap electron neutrinos and antineutrinos at that rate.
         //
         // The absorptive fold is kept commented out as the reference for what was
-        // rejected: it is the block that would have to be restored to carry those
-        // channels through Kirchhoff.
+        // rejected: the separate thermal operator does not restore that fold.
         // abs_0_loc[0] += (neq_0_loc[0] > 0.0)
         //                   ? raw.eta_0_non_cc[weakrates::kNuE]/neq_0_loc[0] : 0.0;
         // abs_0_loc[1] += (neq_0_loc[1] > 0.0)
@@ -366,9 +377,10 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
         // and the absorption coefficients inferred below can differ by group.
         // Apply the non-LTE E_nu^2 correction from the actual M1 mean energy. The factor
         // is referenced to the local matter equilibrium, which is the state every raw
-        // coefficient above was evaluated at. The Kirchhoff closure further down is a
-        // separate operation: it sets the emissivity level at the partial-equilibrium
-        // state the step relaxes toward, and does not re-reference the factor.
+        // coefficient above was evaluated at. Final selected-target closure is a
+        // separate operation: it reconstructs electron CC emission and infers heavy
+        // absorption while preserving corrected heavy emission. It does not
+        // re-reference the correction or apply it to the separate thermal r,q.
         for (int s = 0; s < nspecies_; ++s) {
           Real corr = 1.0;
           if (nudens_0[s] > 0.0 && nudens_1[s] > 0.0 && neq_0_loc[s] > 0.0 &&
@@ -395,7 +407,10 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
         }
 
         // Weakrates has spontaneous heavy emission but no raw heavy absorption.
-        // Construct its thermal opacity from the local blackbody before forming weights.
+        // Infer provisional local-equilibrium absorption before forming predictor
+        // weights. Final published heavy absorption instead uses the selected target.
+        // The unchanged predictor remains approximate: it is not iterated with the
+        // final absorption and does not include the separate electron pair cooling.
         for (int s = 2; s < nspecies_; ++s) {
           abs_0_loc[s] = (neq_0_loc[s] > 0.0) ? eta_0_loc[s]/neq_0_loc[s] : 0.0;
           abs_1_loc[s] = (neq_1_loc[s] > 0.0) ? eta_1_loc[s]/neq_1_loc[s] : 0.0;
@@ -547,14 +562,23 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
           }
         }
 
-        for (int s = 0; s < nspecies_; ++s) {
-          eta_0_loc[s] = abs_0_loc[s]*neq_0_star[s];
-          eta_1_loc[s] = abs_1_loc[s]*neq_1_star[s];
-          point_finite = point_finite && Kokkos::isfinite(eta_0_loc[s]) &&
-                         Kokkos::isfinite(eta_1_loc[s]) &&
-                         Kokkos::isfinite(abs_0_loc[s]) &&
-                         Kokkos::isfinite(abs_1_loc[s]) &&
-                         Kokkos::isfinite(scat_1_loc[s]);
+        // Always finalize, even after prior invalidity or with thermal sources off.
+        // Retain electron CC absorption and corrected spontaneous heavy emission;
+        // the helper accumulates the original five-field finite checks.
+        point_finite = weakrates::FinalizeKirchhoffCoefficients(
+            nspecies_, point_finite, neq_0_star, neq_1_star, eta_0_loc, eta_1_loc,
+            abs_0_loc, abs_1_loc, scat_1_loc);
+
+        weakrates::ElectronThermalCoefficients thermal{};
+        if (thermal_enabled && point_finite) {
+          // Use converted raw r,q without correction or species splitting, and
+          // the already-selected electron references. New-model failure is fatal,
+          // not the original microscopic-invalidity transparent-cell policy.
+          if (!weakrates::BuildElectronThermalCoefficients(
+                  raw, neq_0_star, neq_1_star, thermal)) {
+            Kokkos::abort("WEAKRATES electron thermal coefficients: invalid rates, "
+                          "electron-rate symmetry, or selected references");
+          }
         }
 
         if (!point_finite) {
@@ -574,6 +598,20 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
           eta_1_(m, s, k, j, i) = (eta_1_loc[s] > 0.0) ? eta_1_loc[s] : 0.0;
           abs_1_(m, s, k, j, i) = (abs_1_loc[s] > 0.0) ? abs_1_loc[s] : 0.0;
           scat_1_(m, s, k, j, i) = (scat_1_loc[s] > 0.0) ? scat_1_loc[s] : 0.0;
+        }
+        // All six fields are undensitized and stage-held, including zero-rate
+        // enabled cells. Consumers distinguish enablement from local activity.
+        if (thermal_enabled) {
+          weakrates_thermal_(m, weakrates::kThermalNumberRate, k, j, i) = thermal.r;
+          weakrates_thermal_(m, weakrates::kThermalEnergyRate, k, j, i) = thermal.q;
+          weakrates_thermal_(m, weakrates::kThermalNumberNuE, k, j, i) =
+              thermal.number[0];
+          weakrates_thermal_(m, weakrates::kThermalNumberAntiNuE, k, j, i) =
+              thermal.number[1];
+          weakrates_thermal_(m, weakrates::kThermalEnergyNuE, k, j, i) =
+              thermal.energy[0];
+          weakrates_thermal_(m, weakrates::kThermalEnergyAntiNuE, k, j, i) =
+              thermal.energy[1];
         }
       });
   return TaskStatus::complete;
