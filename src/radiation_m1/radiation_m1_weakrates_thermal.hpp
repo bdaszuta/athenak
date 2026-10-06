@@ -328,16 +328,25 @@ ElectronThermalFailure ProjectGraElectronThermalSources(
     const ElectronThermalSourceInput &input, const int species,
     const RadiationM1Params &params, const RadiationM1Closure closure,
     ElectronThermalResidualState &state) {
-  auto failure = ProjectElectronThermalSources(workspace, input, species, state);
-  if (failure != ElectronThermalFailure::None) return failure;
   const auto regime = input.energy_regime[species];
-  if (regime == SourceStiff) return ElectronThermalFailure::None;
+  if (regime == SourceStiff) {
+    return ProjectElectronThermalSources(workspace, input, species, state);
+  }
+  // Do not compute a discarded endpoint CC E/F source: ka*J may overflow
+  // even when the selected approximate equilibrium reconstruction is finite.
+  const Real D = workspace.cdt * workspace.alp;
+  state.cc_number_increment[species] =
+      D * (input.volume * input.eta_number_cc[species] -
+           input.abs_number_cc[species] * state.number[species] / state.gamma[species]);
+  if (!Kokkos::isfinite(state.cc_number_increment[species])) {
+    return ElectronThermalFailure::NonfiniteSource;
+  }
 
   SrcParams baseline = saved;
   const Real qstar[4] = {saved.Estar, saved.Fstar_d(1), saved.Fstar_d(2),
                          saved.Fstar_d(3)};
   Real gamma{}, energy{}, flux[4]{};
-  failure = PrepareElectronThermalMoments(
+  auto failure = PrepareElectronThermalMoments(
       brent, qstar, baseline, params, closure, input.volume, gamma, energy, flux);
   if (failure != ElectronThermalFailure::None) return failure;
   AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> source_d{};
