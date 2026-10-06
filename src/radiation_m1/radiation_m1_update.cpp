@@ -13,6 +13,7 @@
 #include "coordinates/adm.hpp"
 #include "coordinates/cell_locations.hpp"
 #include "dyn_grmhd/dyn_grmhd.hpp"
+#include "eos/primitive-solver/unit_system.hpp"
 #include "globals.hpp"
 #include "radiation_m1.hpp"
 #include "radiation_m1_calc_closure.hpp"
@@ -155,6 +156,49 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
 
   bool ismhd_ = ismhd;
   bool ishydro_ = ishydro;
+
+  auto source_regime_ = source_regime;
+  const Real mesh_dt = pmy_pack->pmesh->dt;
+  // TimeUpdate depends on CalcOpacity: stage-1 coefficients are available here.
+  // Store once per cycle; the second stage must not reclassify with its own h.
+  if (params_.gra_source_dispatch && stage == 1 && params_.matter_sources) {
+    if (params_.gra_source_temp_min_mev > 0.0) {
+      auto *pdyngr = static_cast<dyngr::DynGRMHDPS<EOSPolicy, ErrorPolicy> *>(
+          pmy_pack->pdyngr);
+      Primitive::EOS<EOSPolicy, ErrorPolicy> &eos = pdyngr->eos.ps.GetEOSMutable();
+      auto temperature_ = pdyngr->temperature;
+      const bool use_c2p_temperature = !pdyngr->IsFixedEvolution();
+      const Real code_to_mev =
+          eos.GetCodeUnitSystem().TemperatureConversion(Primitive::MakeNuclear());
+      par_for(
+          "radiation_m1_gra_source_regime", DevExeSpace(), 0, nmb1,
+          ks, ke, js, je, is, ie,
+          KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+            const Real rho = w0_(m, IDN, k, j, i);
+            Real Y = w0_(m, IYF, k, j, i);
+            const Real T = radiation_mask_(m, k, j, i) ? 0.0 :
+                (use_c2p_temperature ? temperature_(m, 0, k, j, i) :
+                 eos.GetTemperatureFromP(rho / mb, w0_(m, IPR, k, j, i), &Y));
+            for (int nuidx = 0; nuidx < nspecies_; ++nuidx) {
+              source_regime_(m, nuidx, k, j, i) = gra_source_regime(
+                  mesh_dt, abs_1_(m, nuidx, k, j, i),
+                  scat_1_(m, nuidx, k, j, i), rho, T * code_to_mev, params_);
+            }
+          });
+    } else {
+      // Default zero temperature gate needs neither EOS calls nor a fluid EOS.
+      par_for(
+          "radiation_m1_gra_source_regime", DevExeSpace(), 0, nmb1,
+          ks, ke, js, je, is, ie,
+          KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+            for (int nuidx = 0; nuidx < nspecies_; ++nuidx) {
+              source_regime_(m, nuidx, k, j, i) = gra_source_regime(
+                  mesh_dt, abs_1_(m, nuidx, k, j, i),
+                  scat_1_(m, nuidx, k, j, i), w0_(m, IDN, k, j, i), 0.0, params_);
+            }
+          });
+    }
+  }
 
   par_for(
       "radiation_m1_update", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
@@ -435,7 +479,7 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
               continue;
             }
 
-            if (params_.src_update == Explicit) {
+            if (!params_.gra_source_dispatch && params_.src_update == Explicit) {
               // radiation fields
               AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> F_d{};
               AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> S_d{};
@@ -483,7 +527,12 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
               }
             }
 
-            if (params_.src_update == Implicit) {
+            if (params_.gra_source_dispatch || params_.src_update == Implicit) {
+              const Real chi_old = chi_(m, nuidx, k, j, i);
+              const RadiationM1SourceRegime regime = params_.gra_source_dispatch
+                  ? static_cast<RadiationM1SourceRegime>(
+                        source_regime_(m, nuidx, k, j, i))
+                  : SourceLegacy;
               // Boost to the fluid frame, compute fluid matter interaction and
               // boost back. Use these values for implicit solve
 
@@ -527,57 +576,77 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
                     g_dd, g_uu, u_u, Jstar_number, Hstar_number_d, params_);
               }
 
-              // Estimate interaction with matter
-              const Real dtau = beta_dt * (adm.alpha(m, k, j, i) / w_lorentz);
-              Real Jnew = (Jstar + dtau * eta_1_(m, nuidx, k, j, i) * volform) /
-                          (1. + dtau * abs_1_(m, nuidx, k, j, i));
-
-              // Only three components of H^a are independent H^0 is found by
-              // requiring H^a u_a = 0
-              const Real khat =
-                  (abs_1_(m, nuidx, k, j, i) + scat_1_(m, nuidx, k, j, i));
-              AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Hnew_d{};
-              for (int a = 1; a < 4; ++a) {
-                Hnew_d(a) = Hstar_d(a) / (1. + dtau * khat);
-              }
-              Hnew_d(0) = 0.0;
-              for (int a = 1; a < 4; ++a) {
-                Hnew_d(0) -= Hnew_d(a) * (u_u(a) / u_u(0));
-              }
-
-              // Update Tmunu.  Repair J/H before using them to build both xi
-              // and Tmunu; a finite positive comoving J remains valid even
-              // when J <= rad_E_floor.
-              const bool comoving_state_is_valid =
-                  enforce_comoving_moment_safety(g_dd, g_uu, u_u, Jnew, Hnew_d, params_);
-              const Real H2 = comoving_moment_squared(g_dd, g_uu, u_u, Hnew_d);
-              const Real normH = Kokkos::sqrt(H2);
-              const Real inormH = (normH > 0. ? 1. / normH : 0.);
-              const Real xi = comoving_state_is_valid
-                                  ? normH / Jnew
-                                  : 0.;
-              chi_(m, nuidx, k, j, i) = closure_fun(xi, params_.closure_type);
-
-              const Real dthick = 3. * (1. - chi_(m, nuidx, k, j, i)) / 2.;
-              const Real dthin = 1. - dthick;
-
-              for (int a = 0; a < 4; ++a) {
-                for (int b = a; b < 4; ++b) {
-                  rT_dd(a, b) =
-                      Jnew * u_d(a) * u_d(b) + Hnew_d(a) * u_d(b) +
-                      Hnew_d(b) * u_d(a) +
-                      dthin * Jnew *
-                          ((Hnew_d(a) * inormH) * (Hnew_d(b) * inormH)) +
-                      dthick * Jnew * (g_dd(a, b) + u_d(a) * u_d(b)) / 3.;
-                }
-              }
-
-              // Boost back to the lab frame.  A nonfinite analytic state is not
-              // repaired into a charged matter interaction: retain the physicalized
-              // predictor and disable the complete source step for this cell.
               AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Fnew_d{};
-              Real Enew = calc_J_from_rT(rT_dd, n_u);
-              calc_H_from_rT(rT_dd, n_u, gamma_ud, Fnew_d);
+              Real Enew{};
+              Real Jnew{};
+              if (params_.gra_source_dispatch) {
+                if (regime == SourceNonstiff) {
+                  // FE evaluates sources on Epred/Fpred in source_update_ll;
+                  // this physicalized state is only its failure fallback.
+                  Enew = Estar;
+                  for (int a = 0; a < 4; ++a) Fnew_d(a) = Fstar_d(a);
+                } else {
+                  // Equilibrium publishes this literal GRA approximation;
+                  // ordinary stiff uses it only as the existing BE solver seed.
+                  gra_approximate_thick_update(
+                      beta_dt, adm.alpha(m, k, j, i), n_u, w_lorentz, Jstar,
+                      Hstar_d, v_d, v_u, volform * eta_1_(m, nuidx, k, j, i),
+                      abs_1_(m, nuidx, k, j, i), scat_1_(m, nuidx, k, j, i),
+                      Enew, Fnew_d);
+                  chi_(m, nuidx, k, j, i) = 1.0 / 3.0;
+                }
+              } else {
+                // Estimate interaction with matter (unchanged legacy seed)
+                const Real dtau = beta_dt * (adm.alpha(m, k, j, i) / w_lorentz);
+                Jnew = (Jstar + dtau * eta_1_(m, nuidx, k, j, i) * volform) /
+                            (1. + dtau * abs_1_(m, nuidx, k, j, i));
+
+                // Only three components of H^a are independent H^0 is found by
+                // requiring H^a u_a = 0
+                const Real khat =
+                    (abs_1_(m, nuidx, k, j, i) + scat_1_(m, nuidx, k, j, i));
+                AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Hnew_d{};
+                for (int a = 1; a < 4; ++a) {
+                  Hnew_d(a) = Hstar_d(a) / (1. + dtau * khat);
+                }
+                Hnew_d(0) = 0.0;
+                for (int a = 1; a < 4; ++a) {
+                  Hnew_d(0) -= Hnew_d(a) * (u_u(a) / u_u(0));
+                }
+
+                // Update Tmunu.  Repair J/H before using them to build both xi
+                // and Tmunu; a finite positive comoving J remains valid even
+                // when J <= rad_E_floor.
+                const bool comoving_state_is_valid =
+                    enforce_comoving_moment_safety(g_dd, g_uu, u_u, Jnew, Hnew_d, params_);
+                const Real H2 = comoving_moment_squared(g_dd, g_uu, u_u, Hnew_d);
+                const Real normH = Kokkos::sqrt(H2);
+                const Real inormH = (normH > 0. ? 1. / normH : 0.);
+                const Real xi = comoving_state_is_valid
+                                    ? normH / Jnew
+                                    : 0.;
+                chi_(m, nuidx, k, j, i) = closure_fun(xi, params_.closure_type);
+
+                const Real dthick = 3. * (1. - chi_(m, nuidx, k, j, i)) / 2.;
+                const Real dthin = 1. - dthick;
+
+                for (int a = 0; a < 4; ++a) {
+                  for (int b = a; b < 4; ++b) {
+                    rT_dd(a, b) =
+                        Jnew * u_d(a) * u_d(b) + Hnew_d(a) * u_d(b) +
+                        Hnew_d(b) * u_d(a) +
+                        dthin * Jnew *
+                            ((Hnew_d(a) * inormH) * (Hnew_d(b) * inormH)) +
+                        dthick * Jnew * (g_dd(a, b) + u_d(a) * u_d(b)) / 3.;
+                  }
+                }
+
+                // Boost back to the lab frame.  A nonfinite analytic state is not
+                // repaired into a charged matter interaction: retain the physicalized
+                // predictor and disable the complete source step for this cell.
+                Enew = calc_J_from_rT(rT_dd, n_u);
+                calc_H_from_rT(rT_dd, n_u, gamma_ud, Fnew_d);
+              }
               bool analytic_state_is_finite =
                   radiation_state_is_finite(g_uu, Enew, Fnew_d);
               if (!analytic_state_is_finite) {
@@ -597,7 +666,7 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
               const Real chi_analytic = chi_(m, nuidx, k, j, i);
 
               SrcSignal src_signal = SrcFail;
-              if (analytic_state_is_finite) {
+              if (analytic_state_is_finite && regime != SourceEquilibrium) {
                 src_signal = source_update(
                     BrentFunc_, HybridsjFunc_, beta_dt, adm.alpha(m, k, j, i),
                     g_dd, g_uu, n_d, n_u, gamma_ud, u_d, u_u, v_d, v_u,
@@ -605,7 +674,7 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
                     volform * eta_1_(m, nuidx, k, j, i),
                     abs_1_(m, nuidx, k, j, i), scat_1_(m, nuidx, k, j, i),
                     chi_(m, nuidx, k, j, i), Enew, Fnew_d, params_,
-                    params_.closure_type);
+                    params_.closure_type, regime);
               }
               if (src_signal == SrcFail) {
                 Enew = E_analytic;
@@ -632,7 +701,7 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
               DrEFN[nuidx][M1_FY_IDX] = Fnew_d(2) - Fpred_d(2);
               DrEFN[nuidx][M1_FZ_IDX] = Fnew_d(3) - Fpred_d(3);
 
-              if (nspecies_ > 1) {
+              if (nspecies_ > 1 && params_.src_update == Implicit) {
                 // Match the late safety repair formerly applied to Jstar before
                 // deriving the equilibrium average energy.
                 Jstar = Jstar_number;
@@ -661,6 +730,30 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
                   DrEFN[nuidx][M1_N_IDX] =
                       (nueave > 0 ? Gamma * Jnew / nueave - Npred : 0.0);
                 }
+              }
+              if (nspecies_ > 1 && params_.src_update == Explicit) {
+                // GRA overrides energy dispatch, never the selected ATK number
+                // mode. Evaluate explicit number on the old stage state/closure.
+                const Real Eold =
+                    u0_(m, CombinedIdx(nuidx, M1_E_IDX, nvars_), k, j, i);
+                AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Fold_d{};
+                pack_F_d(beta_u(1), beta_u(2), beta_u(3),
+                    u0_(m, CombinedIdx(nuidx, M1_FX_IDX, nvars_), k, j, i),
+                    u0_(m, CombinedIdx(nuidx, M1_FY_IDX, nvars_), k, j, i),
+                    u0_(m, CombinedIdx(nuidx, M1_FZ_IDX, nvars_), k, j, i), Fold_d);
+                AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> Pnumber_dd{};
+                apply_closure(g_dd, g_uu, n_d, w_lorentz, u_u, v_d, proj_ud,
+                              Eold, Fold_d, chi_old, Pnumber_dd, params_);
+                AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> Tnumber_dd{};
+                assemble_rT(n_d, Eold, Fold_d, Pnumber_dd, Tnumber_dd);
+                const Real Jold = calc_J_from_rT(Tnumber_dd, u_u);
+                const Real Gamma_old = radiation_number_gamma(
+                    Eold, Jold, Fold_d, v_u, w_lorentz, params_);
+                const Real Nold =
+                    u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i);
+                DrEFN[nuidx][M1_N_IDX] = beta_dt * adm.alpha(m, k, j, i) *
+                    (volform * eta_0_(m, nuidx, k, j, i) -
+                     abs_0_(m, nuidx, k, j, i) * Nold / Gamma_old);
               }
             }
           }

@@ -65,6 +65,24 @@ RadiationM1::RadiationM1(MeshBlockPack *ppack, ParameterInput *pin)
   params.source_maxiter = pin->GetOrAddInteger("radiation_m1", "source_maxiter", 64);
   params.source_Ye_min = pin->GetOrAddReal("radiation_m1", "source_Ye_min", 0);
   params.source_Ye_max = pin->GetOrAddReal("radiation_m1", "source_Ye_max", 0.6);
+  params.gra_source_dispatch =
+      pin->GetOrAddBoolean("radiation_m1", "gra_source_dispatch", false);
+  params.gra_source_rho_min =
+      pin->GetOrAddReal("radiation_m1", "gra_source_rho_min", 0.0);
+  params.gra_source_temp_min_mev =
+      pin->GetOrAddReal("radiation_m1", "gra_source_temp_min_mev", 0.0);
+  if (!Kokkos::isfinite(params.gra_source_rho_min) ||
+      !Kokkos::isfinite(params.gra_source_temp_min_mev) ||
+      params.gra_source_rho_min < 0.0 || params.gra_source_temp_min_mev < 0.0) {
+    std::cerr << "Error: GRA source gates must be finite and nonnegative" << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  if (params.gra_source_dispatch && params.gra_source_temp_min_mev > 0.0 &&
+      !ismhd && !ishydro) {
+    std::cerr << "Error: nonzero GRA temperature gate requires a fluid EOS" << std::endl;
+    exit(EXIT_FAILURE);
+  }
+
   params.source_thin_limit =
       pin->GetOrAddReal("radiation_m1", "source_thin_limit", 1. / 3.);
   params.source_thick_limit =
@@ -337,6 +355,11 @@ RadiationM1::RadiationM1(MeshBlockPack *ppack, ParameterInput *pin)
   Kokkos::realloc(eta_1, nmb, nspecies, ncells3, ncells2, ncells1);
   Kokkos::realloc(abs_1, nmb, nspecies, ncells3, ncells2, ncells1);
   Kokkos::realloc(scat_1, nmb, nspecies, ncells3, ncells2, ncells1);
+
+  // No allocation or kernel accesses on the legacy path.
+  if (params.gra_source_dispatch) {
+    Kokkos::realloc(source_regime, nmb, nspecies, ncells3, ncells2, ncells1);
+  }
 
   // radiation mask
   Kokkos::realloc(radiation_mask, nmb, ncells3, ncells2, ncells1);

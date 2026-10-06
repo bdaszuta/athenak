@@ -91,6 +91,8 @@ class RadiationM1 {
   DvceArray5D<Real> eta_1;           // energy emissivity coefficient
   DvceArray5D<Real> abs_1;           // energy absorptivity coefficient
   DvceArray5D<Real> scat_1;          // energy scattering coefficient
+  // Empty unless gra_source_dispatch is enabled; frozen at stage 1 each cycle.
+  DvceArray5D<int> source_regime;
 
   MeshBoundaryValuesCC* pbval_u;  // Communication buffers and functions for u
   RadiationM1TaskIDs id;          // container to hold names of TaskIDs

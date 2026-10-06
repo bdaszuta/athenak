@@ -139,6 +139,54 @@ void explicit_update(const SrcParams &src_params, Real &Enew,
 }
 
 
+// Classify once using the full mesh dt for thermalisation, then half dt for
+// nonstiff/stiff. No lapse/W factors, source-limit options, or number override.
+KOKKOS_INLINE_FUNCTION
+RadiationM1SourceRegime gra_source_regime(
+    const Real dt, const Real kabs, const Real kscat, const Real rho,
+    const Real temp_mev, const RadiationM1Params &params) {
+  if (dt * Kokkos::sqrt(kabs * (kabs + kscat)) > 1.0 &&
+      rho >= params.gra_source_rho_min &&
+      temp_mev >= params.gra_source_temp_min_mev) {
+    return SourceEquilibrium;
+  }
+  const Real half_dt = 0.5 * dt;
+  if (half_dt * kabs < 1.0 && half_dt * kscat < 1.0) {
+    return SourceNonstiff;
+  }
+  return SourceStiff;
+}
+
+// Literal GRA approximate first-order thick reconstruction. Hstar_d(i) is
+// already the spatial Eulerian projection (n_i=0); Hn = v^i Htilde_i.
+// In particular, the relaxation denominators contain no lapse.
+KOKKOS_INLINE_FUNCTION
+void gra_approximate_thick_update(
+    const Real h, const Real alp,
+    const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &n_u,
+    const Real W, const Real Jstar,
+    const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &Hstar_d,
+    const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &v_d,
+    const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &v_u,
+    const Real eta_vol, const Real kabs, const Real kscat, Real &Enew,
+    AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &Fnew_d) {
+  const Real Jnew = (W * Jstar + h * eta_vol) / (W + h * kabs);
+  AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Htilde_d{};
+  Real Hn = 0.0;
+  for (int a = 1; a < 4; ++a) {
+    Htilde_d(a) = W * Hstar_d(a) / (W + h * (kabs + kscat));
+    Hn += v_u(a) * Htilde_d(a);
+  }
+  const Real W2 = W * W;
+  Enew = (4.0 * W2 - 1.0) / 3.0 * Jnew + 2.0 * W * Hn;
+  for (int a = 1; a < 4; ++a) {
+    Fnew_d(a) = 4.0 / 3.0 * W2 * Jnew * v_d(a) +
+                W * (Hn * v_d(a) + Htilde_d(a));
+  }
+  Fnew_d(0) = -alp * (n_u(1) * Fnew_d(1) + n_u(2) * Fnew_d(2) +
+                      n_u(3) * Fnew_d(3));
+}
+
 // forward declaration
 KOKKOS_INLINE_FUNCTION
 SrcSignal source_update_eddington(
@@ -181,13 +229,16 @@ SrcSignal source_update_ll(
     const Real &Estar, const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &Fstar_d,
     const Real &eta, const Real &kabs, const Real &kscat, Real &chi, Real &Enew,
     AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &Fnew_d,
-    const RadiationM1Params &m1_params, const RadiationM1Closure &closure_type) {
+    const RadiationM1Params &m1_params, const RadiationM1Closure &closure_type,
+    const RadiationM1SourceRegime forced_regime = SourceLegacy) {
   SrcParams src_params(cdt, alp, g_dd, g_uu, n_d, n_u, gamma_ud, u_d, u_u, v_d, v_u,
                        proj_ud, W, Estar, Fstar_d, chi, eta, kabs, kscat);
 
   // non stiff limit, explicit update
-  if (cdt * kabs < m1_params.source_thin_limit &&
-      cdt * kscat < m1_params.source_thin_limit) {
+  if (forced_regime == SourceNonstiff ||
+      (forced_regime == SourceLegacy &&
+       cdt * kabs < m1_params.source_thin_limit &&
+       cdt * kscat < m1_params.source_thin_limit)) {
     const Real qstar[] = {src_params.Estar, src_params.Fstar_d(1),
                           src_params.Fstar_d(2), src_params.Fstar_d(3)};
     MathSignal ierr = prepare(BrentFunc, qstar, src_params, m1_params, closure_type);
@@ -206,14 +257,15 @@ SrcSignal source_update_ll(
   }
 
   // cannot capture case tau << dt, go to equilibrium
-  if (m1_params.source_thick_limit > 0 &&
+  if (forced_regime == SourceLegacy && m1_params.source_thick_limit > 0 &&
       cdt * cdt * (kabs * (kabs + kscat)) >
           m1_params.source_thick_limit * m1_params.source_thick_limit) {
     return SrcEquil;
   }
 
   // scattering dominated limit
-  if (m1_params.source_scat_limit > 0 && cdt * kscat > m1_params.source_scat_limit) {
+  if (forced_regime == SourceLegacy && m1_params.source_scat_limit > 0 &&
+      cdt * kscat > m1_params.source_scat_limit) {
     return SrcScat;
   }
 
@@ -329,18 +381,19 @@ SrcSignal source_update(
     const Real &Estar, const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &Fstar_d,
     const Real &eta, const Real &kabs, const Real &kscat, Real &chi, Real &Enew,
     AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &Fnew_d,
-    const RadiationM1Params &m1_params, const RadiationM1Closure &closure_type) {
+    const RadiationM1Params &m1_params, const RadiationM1Closure &closure_type,
+    const RadiationM1SourceRegime forced_regime = SourceLegacy) {
   SrcSignal ierr = source_update_ll(
       BrentFunc, HybridsjFunc, cdt, alp, g_dd, g_uu, n_d, n_u, gamma_ud, u_d,
       u_u, v_d, v_u, proj_ud, W, Eold, Fold_d, Estar, Fstar_d, eta, kabs, kscat,
-      chi, Enew, Fnew_d, m1_params, closure_type);
+      chi, Enew, Fnew_d, m1_params, closure_type, forced_regime);
   if (ierr == SrcFail && closure_type != Eddington) {
     RadiationM1Params fallback_params = m1_params;
     fallback_params.closure_type = Eddington;
     const SrcSignal fallback_signal = source_update_ll(
         BrentFunc, HybridsjFunc, cdt, alp, g_dd, g_uu, n_d, n_u, gamma_ud, u_d,
         u_u, v_d, v_u, proj_ud, W, Eold, Fold_d, Estar, Fstar_d, eta, kabs,
-        kscat, chi, Enew, Fnew_d, fallback_params, Eddington);
+        kscat, chi, Enew, Fnew_d, fallback_params, Eddington, forced_regime);
     ierr = (fallback_signal == SrcFail) ? SrcFail : SrcEddington;
 #ifdef DEBUG_BUILD
     if (ierr == SrcFail) {

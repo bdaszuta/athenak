@@ -42,6 +42,14 @@ enum RadiationM1SrcUpdate {
   Implicit,
 };
 
+// Frozen per-species GRA energy dispatch; legacy keeps the old stage-local path.
+enum RadiationM1SourceRegime {
+  SourceLegacy,
+  SourceNonstiff,
+  SourceStiff,
+  SourceEquilibrium,
+};
+
 //----------------------------------------------------------------------------------------
 //! \enum RadiationM1ClosureSolver
 //  \brief rootfinder used to determine the Minerbo closure
@@ -91,6 +99,10 @@ struct RadiationM1Params {
   Real source_epsabs;   // target absolute precision for non-linear solver
   Real source_epsrel;   // target relative precision for non-linear solver
   int source_maxiter;   // maximum number of iterations for non-linear solver
+
+  bool gra_source_dispatch = false;  // overrides energy src_update only; off is legacy
+  Real gra_source_rho_min = 0.0;      // equilibrium gate: rest density in code units
+  Real gra_source_temp_min_mev = 0.0; // equilibrium gate: temperature in MeV
 
   Real source_thin_limit;   // Use the explicit update below this optical depth per timestep
   Real source_thick_limit;  // Use the optically thick limit if the equilibration time is
