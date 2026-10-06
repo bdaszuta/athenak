@@ -110,9 +110,10 @@ void CalcFlux(const int m, const int k, const int j, const int i, const int nuid
 
   Real J = calc_J_from_rT(T_dd, u_u);
   calc_H_from_rT(T_dd, u_u, proj_ud, H_d);
+  const Real Gamma =
+      radiation_number_gamma(E, J, F_d, v_u, w_lorentz, params_);
   Real h_fac{};
-  const bool comoving_state_is_valid =
-      enforce_comoving_moment_safety(g_dd, g_uu, u_u, J, H_d, params_, &h_fac);
+  enforce_comoving_moment_safety(g_dd, g_uu, u_u, J, H_d, params_, &h_fac);
 
   Real N{};
   if (nspecies_ > 1) {
@@ -120,15 +121,8 @@ void CalcFlux(const int m, const int k, const int j, const int i, const int nuid
   }
   assemble_fnu(g_uu, T_dd, u_u, J, h_fac, fnu_u);
 
-  // Gamma is the Eulerian 0-component of the number current fnu = u + H/J.
-  // It must be evaluated from the SAME (possibly safety-rescaled) H used for
-  // the flux; the E/F/J identity is stale after H has been rescaled.
-  const Real Gamma_candidate = adm.alpha(m, k, j, i) * fnu_u(0);
-  const Real Gamma = comoving_state_is_valid &&
-                             Kokkos::isfinite(Gamma_candidate) &&
-                             Gamma_candidate > 0.0
-                         ? Gamma_candidate
-                         : w_lorentz;
+  // Density uses the GRA scalar conversion above; retain the existing safety
+  // projection of the spatial number current used for transport.
 
   // Note that nnu is densitized here
   Real nnu{};

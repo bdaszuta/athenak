@@ -457,21 +457,9 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
               AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> H_d{};
               Real J = calc_J_from_rT(T_dd, u_u);
               calc_H_from_rT(T_dd, u_u, proj_ud, H_d);
-              Real h_fac{};
-              const bool comoving_state_is_valid =
-                  enforce_comoving_moment_safety(g_dd, g_uu, u_u, J, H_d, params_, &h_fac);
-
-              // Gamma is the Eulerian 0-component of the number current
-              // fnu = u + H/J, evaluated from the same (possibly
-              // safety-rescaled) H used for the number source.
-              AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> fnu_u{};
-              assemble_fnu(g_uu, T_dd, u_u, J, h_fac, fnu_u);
-              const Real Gamma_candidate = adm.alpha(m, k, j, i) * fnu_u(0);
-              const Real Gamma = comoving_state_is_valid &&
-                                         Kokkos::isfinite(Gamma_candidate) &&
-                                         Gamma_candidate > 0.0
-                                     ? Gamma_candidate
-                                     : w_lorentz;
+              const Real Gamma =
+                  radiation_number_gamma(E, J, F_d, v_u, w_lorentz, params_);
+              enforce_comoving_moment_safety(g_dd, g_uu, u_u, J, H_d, params_);
 
               // Compute radiation sources
               calc_rad_sources(eta_1_(m, nuidx, k, j, i) * volform,
@@ -527,24 +515,16 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
               Real Jstar = calc_J_from_rT(rT_dd, u_u);
               AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Hstar_d{};
               calc_H_from_rT(rT_dd, u_u, proj_ud, Hstar_d);
-              Real Gamma_star{};
+              const Real Gamma_star = radiation_number_gamma(
+                  Estar, Jstar, Fstar_d, v_u, w_lorentz, params_);
               Real Jstar_number = Jstar;
               if (nspecies_ > 1) {
                 AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Hstar_number_d{};
                 for (int a = 0; a < 4; ++a) {
                   Hstar_number_d(a) = Hstar_d(a);
                 }
-                Real hstar_fac{};
-                const bool star_number_state_is_valid = enforce_comoving_moment_safety(
-                    g_dd, g_uu, u_u, Jstar_number, Hstar_number_d, params_, &hstar_fac);
-                AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> fstar_u{};
-                assemble_fnu(g_uu, rT_dd, u_u, Jstar_number, hstar_fac, fstar_u);
-                const Real Gamma_star_candidate = adm.alpha(m, k, j, i) * fstar_u(0);
-                Gamma_star = star_number_state_is_valid &&
-                                     Kokkos::isfinite(Gamma_star_candidate) &&
-                                     Gamma_star_candidate > 0.0
-                                 ? Gamma_star_candidate
-                                 : w_lorentz;
+                enforce_comoving_moment_safety(
+                    g_dd, g_uu, u_u, Jstar_number, Hstar_number_d, params_);
               }
 
               // Estimate interaction with matter
@@ -658,19 +638,10 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
                 Jstar = Jstar_number;
                 AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Hnumber_d{};
                 calc_H_from_rT(T_dd, u_u, proj_ud, Hnumber_d);
-                Real hnumber_fac{};
-                const bool number_state_is_valid =
-                    enforce_comoving_moment_safety(g_dd, g_uu, u_u, Jnew, Hnumber_d,
-                                                   params_, &hnumber_fac);
-
-                AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> fnumber_u{};
-                assemble_fnu(g_uu, T_dd, u_u, Jnew, hnumber_fac, fnumber_u);
-                const Real Gamma_candidate = adm.alpha(m, k, j, i) * fnumber_u(0);
-                const Real Gamma = number_state_is_valid &&
-                                           Kokkos::isfinite(Gamma_candidate) &&
-                                           Gamma_candidate > 0.0
-                                       ? Gamma_candidate
-                                       : w_lorentz;
+                const Real Gamma = radiation_number_gamma(
+                    Enew, Jnew, Fnew_d, v_u, w_lorentz, params_);
+                enforce_comoving_moment_safety(g_dd, g_uu, u_u, Jnew, Hnumber_d,
+                                               params_);
 
                 if (params_.source_therm_limit < 0 ||
                     beta_dt * abs_0_(m, nuidx, k, j, i) <

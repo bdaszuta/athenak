@@ -154,6 +154,23 @@ Real flux_factor(const AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> &g_uu,
   return Kokkos::fmax(0.0, Kokkos::fmin(xi, 1.0));
 }
 
+// GRA number/frame conversion from the unrepaired moments. v_u is the ordinary
+// Eulerian three-velocity (not W*v). The fixed GRA epsilon is not rad_eps;
+// both comparisons deliberately use ATK's native energy floor, unchanged.
+KOKKOS_INLINE_FUNCTION
+Real radiation_number_gamma(
+    const Real E, const Real J,
+    const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &F_d,
+    const AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> &v_u,
+    const Real W, const RadiationM1Params &params) {
+  if (E > params.rad_E_floor && J > params.rad_E_floor) {
+    Real Fv = 0.0;
+    for (int a = 1; a < 4; ++a) Fv += F_d(a) * v_u(a);
+    return W * (E / J) * Kokkos::fmin(1.0 - Fv / E, 1.0 - 1.0e-5);
+  }
+  return W;
+}
+
 //----------------------------------------------------------------------------------------
 //! \fn void radiationm1::assemble_fnu
 //  \brief Assemble the unit-norm radiation number current without cancellation.
