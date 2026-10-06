@@ -201,6 +201,8 @@ ElectronThermalFailure PrepareElectronThermalMoments(
   assemble_rT(workspace.n_d, workspace.E, workspace.F_d, workspace.P_dd,
               workspace.T_dd);
   workspace.J = calc_J_from_rT(workspace.T_dd, workspace.u_u);
+  gamma = radiation_number_gamma(workspace.E, workspace.J, workspace.F_d,
+                                  workspace.v_u, workspace.W, params);
   calc_H_from_rT(workspace.T_dd, workspace.u_u, workspace.proj_ud, workspace.H_d);
   Real h_fac{};
   if (!enforce_comoving_moment_safety(workspace.g_dd, workspace.g_uu,
@@ -211,7 +213,6 @@ ElectronThermalFailure PrepareElectronThermalMoments(
   AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> current{};
   assemble_fnu(workspace.g_uu, workspace.T_dd, workspace.u_u, workspace.J,
                h_fac, current);
-  gamma = workspace.alp * current(0);
   energy = workspace.J / volume;
   if (!Kokkos::isfinite(gamma) || gamma <= 0.0 ||
       !Kokkos::isfinite(energy) || energy <= 0.0) {
