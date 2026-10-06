@@ -14,6 +14,7 @@
 #include "radiation_m1/radiation_m1_calc_closure.hpp"
 #include "radiation_m1/radiation_m1_helpers.hpp"
 #include "radiation_m1/radiation_m1_params.hpp"
+#include "radiation_m1/radiation_m1_sources.hpp"
 #include "radiation_m1/radiation_m1_weakrates.hpp"
 
 namespace radiationm1 {
@@ -68,6 +69,8 @@ struct ElectronThermalSourceInput {
   Real abs_number_cc[2]{};
   Real explicit_moment[2][4]{};
   Real explicit_number[2]{};
+  // Used only by gra_source_dispatch; copied from the stage-held CC regimes.
+  RadiationM1SourceRegime energy_regime[2] = {SourceLegacy, SourceLegacy};
 };
 
 // Absolute unlimited endpoints, not deltas. CC and pair attribution are full-
@@ -130,6 +133,12 @@ ElectronThermalFailure ValidateElectronThermalInput(
         ((thermal.r > 0.0 || thermal.q > 0.0) && thermal.number[s] <= 0.0) ||
         (thermal.q > 0.0 && thermal.energy[s] <= 0.0)) {
       return ElectronThermalFailure::InvalidReference;
+    }
+    if (params.gra_source_dispatch &&
+        input.energy_regime[s] != SourceNonstiff &&
+        input.energy_regime[s] != SourceStiff &&
+        input.energy_regime[s] != SourceEquilibrium) {
+      return ElectronThermalFailure::InvalidInput;
     }
     const auto &saved = electron[s];
     if (!Kokkos::isfinite(saved.cdt) || saved.cdt < 0.0 ||
@@ -310,6 +319,74 @@ ElectronThermalFailure ProjectElectronThermalSources(
   return ElectronThermalFailure::None;
 }
 
+// Retained GRA regimes apply only to the CC/scattering E/F block. Pair losses
+// remain implicit through endpoint J/H and endpoint partner number in lambda.
+// The number equations and their CC-only/shared-pair attribution are unchanged.
+KOKKOS_INLINE_FUNCTION
+ElectronThermalFailure ProjectGraElectronThermalSources(
+    const BrentFunctor &brent, const SrcParams &saved, SrcParams &workspace,
+    const ElectronThermalSourceInput &input, const int species,
+    const RadiationM1Params &params, const RadiationM1Closure closure,
+    ElectronThermalResidualState &state) {
+  auto failure = ProjectElectronThermalSources(workspace, input, species, state);
+  if (failure != ElectronThermalFailure::None) return failure;
+  const auto regime = input.energy_regime[species];
+  if (regime == SourceStiff) return ElectronThermalFailure::None;
+
+  SrcParams baseline = saved;
+  const Real qstar[4] = {saved.Estar, saved.Fstar_d(1), saved.Fstar_d(2),
+                         saved.Fstar_d(3)};
+  Real gamma{}, energy{}, flux[4]{};
+  failure = PrepareElectronThermalMoments(
+      brent, qstar, baseline, params, closure, input.volume, gamma, energy, flux);
+  if (failure != ElectronThermalFailure::None) return failure;
+  AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> source_d{};
+  AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> projected_d{};
+  if (regime == SourceNonstiff) {
+    // CC forward Euler at the repaired pre-source baseline, plus pair backward
+    // Euler at the endpoint. No thermal rate enters the frozen classification.
+    calc_rad_sources(saved.eta, saved.kabs, saved.kscat, saved.u_d,
+                     baseline.J, baseline.H_d, source_d);
+    AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> pair_d{};
+    calc_rad_sources(input.volume * input.thermal.q, state.lambda[species], 0.0,
+                     saved.u_d, workspace.J, workspace.H_d, pair_d);
+    for (int a = 0; a < 4; ++a) source_d(a) += pair_d(a);
+    state.moment_increment[species][0] =
+        saved.cdt * calc_rE_source(saved.alp, saved.n_u, source_d);
+    calc_rF_source(saved.alp, saved.gamma_ud, source_d, projected_d);
+    for (int a = 1; a < 4; ++a) {
+      state.moment_increment[species][a] = saved.cdt * projected_d(a);
+    }
+  } else if (regime == SourceEquilibrium) {
+    // Use the GRA approximate CC reconstruction with implicit partner losses.
+    // CC retains its literal h denominators; the separate thermal rates retain
+    // their lapse factor. These are local solve inputs, not published opacities.
+    const Real emission = saved.eta + saved.alp * input.volume * input.thermal.q;
+    const Real absorption = saved.kabs + saved.alp * state.lambda[species];
+    if (!Kokkos::isfinite(emission) || !Kokkos::isfinite(absorption)) {
+      return ElectronThermalFailure::NonfiniteSource;
+    }
+    Real endpoint_energy{};
+    AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> endpoint_flux{};
+    gra_approximate_thick_update(
+        saved.cdt, saved.alp, saved.n_u, saved.W, baseline.J, baseline.H_d,
+        saved.v_d, saved.v_u, emission, absorption, saved.kscat,
+        endpoint_energy, endpoint_flux);
+    state.moment_increment[species][0] = endpoint_energy - saved.Estar;
+    for (int a = 1; a < 4; ++a) {
+      state.moment_increment[species][a] = endpoint_flux(a) - saved.Fstar_d(a);
+    }
+  } else {
+    return ElectronThermalFailure::InvalidInput;
+  }
+  for (int a = 0; a < 4; ++a) {
+    if (!Kokkos::isfinite(state.moment_increment[species][a])) {
+      return ElectronThermalFailure::NonfiniteSource;
+    }
+  }
+  return ElectronThermalFailure::None;
+}
+
 // Nine unknowns: E0,F0x,F0y,F0z,E1,F1x,F1y,F1z,xi. xi is a densitized
 // pair-number increment, NOT the closure flux factor. Every call restores the
 // original closure seeds and immutable CC/geometry/baseline records; perturbation
@@ -357,7 +434,10 @@ ElectronThermalFailure EvaluateElectronThermalResidual(
     return ElectronThermalFailure::NonfiniteSource;
   }
   for (int s = 0; s < 2; ++s) {
-    failure = ProjectElectronThermalSources(workspace[s], input, s, trial);
+    failure = params.gra_source_dispatch
+        ? ProjectGraElectronThermalSources(brent, electron[s], workspace[s],
+                                          input, s, params, closure, trial)
+        : ProjectElectronThermalSources(workspace[s], input, s, trial);
     if (failure != ElectronThermalFailure::None) return failure;
     for (int a = 0; a < 4; ++a) {
       const Real baseline = (a == 0) ? electron[s].Estar : electron[s].Fstar_d(a);
@@ -697,7 +777,7 @@ bool UpdateElectronThermalSources(
         result.moment[s][a] = a == 0 ? electron[s].Estar : electron[s].Fstar_d(a);
       }
     }
-  } else if (params.src_update == Explicit) {
+  } else if (!params.gra_source_dispatch && params.src_update == Explicit) {
     failure = EvaluateElectronThermalExplicit(brent, electron, input, params, result);
   } else {
     Real x[9]{}, column_scale[9]{}, row_scale[9]{};
@@ -758,7 +838,8 @@ bool UpdateElectronThermalSources(
     return false;
   }
   result.failure = ElectronThermalFailure::None;
-  result.status = params.src_update == Explicit ? SrcThin : SrcOk;
+  result.status = !params.gra_source_dispatch && params.src_update == Explicit
+                      ? SrcThin : SrcOk;
   out = result;
   return true;
 }

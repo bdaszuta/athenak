@@ -85,6 +85,32 @@ absorption. The separate thermal operator retains its enable control, clearing,
 validation, and selected electron references. Existing density/temperature
 masks and microscopic-invalidity zeroing are unchanged.
 
+## Coupled electron thermal sources
+
+When thermal emission is active, the coupled solver consumes the same two
+stage-held CC regimes as the ordinary source path. The saved regimes are not
+recomputed using thermal rates. Mixed electron regimes are supported:
+
+- Nonstiff: CC/scattering E/F is forward Euler at the repaired pre-source baseline;
+  thermal E/F remains backward Euler at the endpoint.
+- Stiff: the existing combined CC/scattering/thermal backward-Euler equations.
+- Equilibrium: the common GRA approximate reconstruction, with local solve inputs
+  `eta_CC + alpha*V*q` and `ka_CC + alpha*lambda_s`. Thermal partner losses remain
+  implicit; CC keeps GRA's literal stage-h denominators and thermal terms retain
+  their lapse factor. These additions are not published transport opacities.
+
+The coupled nine-variable solve remains responsible for the endpoint, including
+implicit pair-number exchange and CC-number absorption. GRA dispatch overrides
+legacy `src_update` selection for this path; when dispatch is false, its explicit
+and implicit paths are unchanged apart from the unconditional frame conversion.
+The shared limiter and paired material update still apply once to the complete
+source increment. The ordinary electron source loop skips thermally active groups,
+so no source is applied twice.
+
+This is an extension of GRA's CC dispatch to the separate ATK thermal model,
+not a claim that GRA contains this coupled thermal model. Moving-frame compiled
+solver validation remains outstanding.
+
 ## Verification boundary
 
 With all four options omitted or explicitly false, the standard source and

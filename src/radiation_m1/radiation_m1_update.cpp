@@ -505,7 +505,11 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
                 input.number_star[s] = source_base[s][M1_N_IDX];
                 input.eta_number_cc[s] = eta_0_(m, s, k, j, i);
                 input.abs_number_cc[s] = abs_0_(m, s, k, j, i);
-                if (params_.src_update == Explicit) {
+                if (params_.gra_source_dispatch) {
+                  input.energy_regime[s] = static_cast<RadiationM1SourceRegime>(
+                      source_regime_(m, s, k, j, i));
+                }
+                if (!params_.gra_source_dispatch && params_.src_update == Explicit) {
                   for (int a = 0; a < 4; ++a) {
                     input.explicit_moment[s][a] =
                         u0_(m, CombinedIdx(s, a, nvars_), k, j, i);
