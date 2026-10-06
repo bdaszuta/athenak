@@ -33,6 +33,8 @@ struct WeakRatesParams {
   bool gra_equilibrium_targets = false;
   // Defer spectral correction until after target prediction/selection.
   bool gra_opacity_order = false;
+  // Correct with the selected target mean, independently of target/pipeline policy.
+  bool gra_target_mean = false;
   // Construction-time, default-on separate electron thermal source operator.
   // False retains legacy electron sources while preserving the heavy finalizer.
   bool use_electron_thermal_emission = true;

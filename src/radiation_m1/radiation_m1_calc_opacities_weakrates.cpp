@@ -570,10 +570,31 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
           }
         }
 
-        if (weakrates_params_.gra_opacity_order) {
+        if (weakrates_params_.gra_opacity_order ||
+            weakrates_params_.gra_target_mean) {
+          if (weakrates_params_.gra_target_mean) {
+            // Reset only spectral inputs, not thermal r/q or target selection.
+            // With standard ordering the predictor used local-corrected rates;
+            // the published coefficients must not receive both correction factors.
+            for (int s = 0; s < nspecies_; ++s) {
+              const int rs = (s < 2) ? s : weakrates::kNuX;
+              scat_1_loc[s] = raw.scat_1[rs];
+              if (s < 2) {
+                abs_0_loc[s] = raw.abs_0[rs];
+                abs_1_loc[s] = raw.abs_1[rs];
+              } else {
+                eta_0_loc[s] = heavy_split*raw.eta_0[weakrates::kNuX];
+                eta_1_loc[s] = heavy_split*raw.eta_1[weakrates::kNuX];
+              }
+            }
+          }
+          const Real *reference_number =
+              weakrates_params_.gra_target_mean ? neq_0_star : neq_0_loc;
+          const Real *reference_energy =
+              weakrates_params_.gra_target_mean ? neq_1_star : neq_1_loc;
           weakrates::ApplySpectralCorrection(
               nspecies_, weakrates_params_.opacity_corr_fac_max,
-              nudens_0, nudens_1, neq_0_loc, neq_1_loc,
+              nudens_0, nudens_1, reference_number, reference_energy,
               eta_0_loc, eta_1_loc, abs_0_loc, abs_1_loc, scat_1_loc);
         }
 

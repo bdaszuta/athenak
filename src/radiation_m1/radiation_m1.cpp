@@ -173,6 +173,8 @@ RadiationM1::RadiationM1(MeshBlockPack *ppack, ParameterInput *pin)
         pin->GetOrAddBoolean("weakrates", "gra_equilibrium_targets", false);
     weakrates_params.gra_opacity_order =
         pin->GetOrAddBoolean("weakrates", "gra_opacity_order", false);
+    weakrates_params.gra_target_mean =
+        pin->GetOrAddBoolean("weakrates", "gra_target_mean", false);
     weakrates_params.peq_w_floor =
         pin->GetOrAddReal("weakrates", "peq_w_floor", 1.0e-3);
     weakrates_params.peq_dlnT_tol =
