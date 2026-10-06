@@ -28,6 +28,9 @@ struct WeakRatesParams {
   Real peq_dlnT_tol;
   Real peq_dYe_tol;
   bool use_partial_equilibrium;
+  // Full conserved endpoint and raw-electron-timescale moment selection.
+  // When false, the existing partial-equilibrium controls retain their meaning.
+  bool gra_equilibrium_targets = false;
   // Construction-time, default-on separate electron thermal source operator.
   // False retains legacy electron sources while preserving the heavy finalizer.
   bool use_electron_thermal_emission = true;

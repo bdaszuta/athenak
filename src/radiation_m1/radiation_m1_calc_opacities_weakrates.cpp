@@ -17,6 +17,7 @@
 #include "radiation_m1/radiation_m1.hpp"
 #include "radiation_m1/radiation_m1_helpers.hpp"
 #include "radiation_m1/radiation_m1_weakrates.hpp"
+#include "radiation_m1/radiation_m1_weakrates_equilibrium.hpp"
 
 namespace radiationm1 {
 
@@ -425,7 +426,8 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
 
         Real temp_star = temp;
         Real ye_star = ye;
-        if (point_finite && weakrates_params_.use_partial_equilibrium) {
+        if (point_finite && !weakrates_params_.gra_equilibrium_targets &&
+            weakrates_params_.use_partial_equilibrium) {
           const Real dtau = dt_*adm.alpha(m, k, j, i)/w_lorentz;
           // Only equal heavy equilibrium densities share the EOS coefficient.
           // Current densities keep the weights of their own inferred opacities.
@@ -523,7 +525,17 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
 
         Real neq_0_star[M1_TOTAL_NUM_SPECIES]{};
         Real neq_1_star[M1_TOTAL_NUM_SPECIES]{};
-        if (point_finite) {
+        if (point_finite && weakrates_params_.gra_equilibrium_targets) {
+          // Raw selector uses mesh dt, not dt*alpha/W. Failure is explicit:
+          // a constrained/energy-only root is not full conserved equilibrium.
+          if (!weakrates::BuildGraEquilibriumTargets(
+                  eos, nb, temp, ye, dt_, raw.abs_1, raw.scat_1,
+                  nudens_0, nudens_1, neq_0_loc, neq_1_loc,
+                  neq_0_star, neq_1_star)) {
+            Kokkos::abort("WEAKRATES GRA equilibrium: no conserving interior "
+                          "target for the current energy/lepton budgets");
+          }
+        } else if (point_finite) {
           Real ye_star_arr[3] = {ye_star, 0.0, 0.0};
           const Real mu_le_star =
               eos.GetElectronLeptonChemicalPotential(nb, temp_star, ye_star_arr);
