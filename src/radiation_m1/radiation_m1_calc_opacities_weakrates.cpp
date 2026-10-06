@@ -221,17 +221,9 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
           AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> H_d{};
           J[s] = calc_J_from_rT(T_dd, u_u);
           calc_H_from_rT(T_dd, u_u, proj_ud, H_d);
-          Real h_fac{};
-          const bool comoving_state_is_valid = enforce_comoving_moment_safety(
-              g_dd, g_uu, u_u, J[s], H_d, m1_params_, &h_fac);
-          AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> fnu_u{};
-          assemble_fnu(g_uu, T_dd, u_u, J[s], h_fac, fnu_u);
-          const Real gamma_candidate = adm.alpha(m, k, j, i)*fnu_u(0);
-          const Real gamma = comoving_state_is_valid &&
-                                     Kokkos::isfinite(gamma_candidate) &&
-                                     gamma_candidate > 0.0
-                                 ? gamma_candidate
-                                 : w_lorentz;
+          const Real gamma = radiation_number_gamma(
+              E, J[s], F_d, v_u, w_lorentz, m1_params_);
+          enforce_comoving_moment_safety(g_dd, g_uu, u_u, J[s], H_d, m1_params_);
           rnnu[s] = u0_(m, CombinedIdx(s, M1_N_IDX, nvars_), k, j, i)/gamma;
           point_finite = point_finite && Kokkos::isfinite(J[s]) &&
                          Kokkos::isfinite(rnnu[s]);
