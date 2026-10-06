@@ -374,28 +374,32 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
         // separate operation: it reconstructs electron CC emission and infers heavy
         // absorption while preserving corrected heavy emission. It does not
         // re-reference the correction or apply it to the separate thermal r,q.
-        for (int s = 0; s < nspecies_; ++s) {
-          Real corr = 1.0;
-          if (nudens_0[s] > 0.0 && nudens_1[s] > 0.0 && neq_0_loc[s] > 0.0 &&
-              neq_1_loc[s] > 0.0) {
-            Real ratio = (nudens_1[s]/nudens_0[s])*(neq_0_loc[s]/neq_1_loc[s]);
-            if (Kokkos::isfinite(ratio)) {
-              ratio = Kokkos::fmax(1.0/weakrates_params_.opacity_corr_fac_max,
-                                   Kokkos::fmin(ratio,
-                                                weakrates_params_.opacity_corr_fac_max));
-              corr = ratio*ratio;
+        // False retains the standard corrected-coefficient predictor. True
+        // builds targets with uncorrected inputs and corrects only afterward.
+        if (!weakrates_params_.gra_opacity_order) {
+          for (int s = 0; s < nspecies_; ++s) {
+            Real corr = 1.0;
+            if (nudens_0[s] > 0.0 && nudens_1[s] > 0.0 && neq_0_loc[s] > 0.0 &&
+                neq_1_loc[s] > 0.0) {
+              Real ratio = (nudens_1[s]/nudens_0[s])*(neq_0_loc[s]/neq_1_loc[s]);
+              if (Kokkos::isfinite(ratio)) {
+                ratio = Kokkos::fmax(1.0/weakrates_params_.opacity_corr_fac_max,
+                                     Kokkos::fmin(ratio,
+                                                  weakrates_params_.opacity_corr_fac_max));
+                corr = ratio*ratio;
+              }
             }
-          }
-          scat_1_loc[s] *= corr;
-          if (s < 2) {
-            // Charged-current kind: the opacity is the microscopic input.
-            abs_0_loc[s] *= corr;
-            abs_1_loc[s] *= corr;
-          } else {
-            // Emission-only kind: the emissivity is the microscopic input, and the
-            // rebuild below derives the opacity from it.
-            eta_0_loc[s] *= corr;
-            eta_1_loc[s] *= corr;
+            scat_1_loc[s] *= corr;
+            if (s < 2) {
+              // Charged-current kind: the opacity is the microscopic input.
+              abs_0_loc[s] *= corr;
+              abs_1_loc[s] *= corr;
+            } else {
+              // Emission-only kind: the emissivity is the microscopic input, and the
+              // rebuild below derives the opacity from it.
+              eta_0_loc[s] *= corr;
+              eta_1_loc[s] *= corr;
+            }
           }
         }
 
@@ -564,6 +568,13 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
               neq_1_star[s] = neq_1_loc[s];
             }
           }
+        }
+
+        if (weakrates_params_.gra_opacity_order) {
+          weakrates::ApplySpectralCorrection(
+              nspecies_, weakrates_params_.opacity_corr_fac_max,
+              nudens_0, nudens_1, neq_0_loc, neq_1_loc,
+              eta_0_loc, eta_1_loc, abs_0_loc, abs_1_loc, scat_1_loc);
         }
 
         // Always finalize, even after prior invalidity or with thermal sources off.

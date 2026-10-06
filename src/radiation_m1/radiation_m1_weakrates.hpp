@@ -31,6 +31,8 @@ struct WeakRatesParams {
   // Full conserved endpoint and raw-electron-timescale moment selection.
   // When false, the existing partial-equilibrium controls retain their meaning.
   bool gra_equilibrium_targets = false;
+  // Defer spectral correction until after target prediction/selection.
+  bool gra_opacity_order = false;
   // Construction-time, default-on separate electron thermal source operator.
   // False retains legacy electron sources while preserving the heavy finalizer.
   bool use_electron_thermal_emission = true;
@@ -367,6 +369,37 @@ void ConvertToCodeUnits(const UnitConversions &units, EquilibriumDensities &dens
   for (int s = 0; s < kNumRateSpecies; ++s) {
     densities.number[s] /= units.number_cgs_per_eos;
     densities.energy[s] /= units.energy_cgs_per_code;
+  }
+}
+
+//! Apply one spectral factor to the microscopic input of each transport group.
+//! Targets/current moments retain their caller units; only their mean ratio enters.
+//! Electron absorption and heavy emission are the respective microscopic inputs.
+KOKKOS_INLINE_FUNCTION
+void ApplySpectralCorrection(
+    const int nspecies, const Real factor_max, const Real current_number[],
+    const Real current_energy[], const Real reference_number[],
+    const Real reference_energy[], Real eta_0[], Real eta_1[], Real abs_0[],
+    Real abs_1[], Real scat_1[]) {
+  for (int s = 0; s < nspecies; ++s) {
+    Real corr = 1.0;
+    if (current_number[s] > 0.0 && current_energy[s] > 0.0 &&
+        reference_number[s] > 0.0 && reference_energy[s] > 0.0) {
+      Real ratio = (current_energy[s]/current_number[s])*
+                   (reference_number[s]/reference_energy[s]);
+      if (Kokkos::isfinite(ratio)) {
+        ratio = Kokkos::fmax(1.0/factor_max, Kokkos::fmin(ratio, factor_max));
+        corr = ratio*ratio;
+      }
+    }
+    scat_1[s] *= corr;
+    if (s < 2) {
+      abs_0[s] *= corr;
+      abs_1[s] *= corr;
+    } else {
+      eta_0[s] *= corr;
+      eta_1[s] *= corr;
+    }
   }
 }
 
