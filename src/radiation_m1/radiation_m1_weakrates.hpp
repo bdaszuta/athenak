@@ -375,7 +375,9 @@ void ConvertToCodeUnits(const UnitConversions &units, EquilibriumDensities &dens
 }
 
 //! Apply one spectral factor to the microscopic input of each transport group.
-//! Targets/current moments retain their caller units; only their mean ratio enters.
+//! Current inputs may be the stored lab N and spectral numerator W*(E-F_i*v^i),
+//! not the comoving J moment. Their shared density weight cancels in the mean;
+//! that mean and reference_energy/reference_number must have compatible units.
 //! Electron absorption and heavy emission are the respective microscopic inputs.
 KOKKOS_INLINE_FUNCTION
 void ApplySpectralCorrection(

@@ -52,6 +52,10 @@ struct GraTargetValidation {
   const Real *eta_0 = nullptr, *eta_1 = nullptr;
   const Real *abs_0 = nullptr, *abs_1 = nullptr, *scat_1 = nullptr;
   bool thermal_enabled = false;
+  // Dedicated spectral ratio inputs may differ from the physical comoving
+  // current pair used below for thermal validation. A missing pair retains
+  // the caller's current mean; the opacity producer supplies both explicitly.
+  const Real *spectral_number = nullptr, *spectral_energy = nullptr;
 
   KOKKOS_INLINE_FUNCTION bool operator()(const Real *number,
                                           const Real *energy) const {
@@ -59,6 +63,7 @@ struct GraTargetValidation {
         current_energy == nullptr || local_number == nullptr ||
         local_energy == nullptr || eta_0 == nullptr || eta_1 == nullptr ||
         abs_0 == nullptr || abs_1 == nullptr || scat_1 == nullptr) return false;
+    if ((spectral_number == nullptr) != (spectral_energy == nullptr)) return false;
     Real en[4], ej[4], an[4], aj[4], sc[4];
     for (int s = 0; s < 4; ++s) {
       en[s] = eta_0[s]; ej[s] = eta_1[s];
@@ -77,7 +82,8 @@ struct GraTargetValidation {
         }
       }
       ApplySpectralCorrection(4, params->opacity_corr_fac_max,
-          current_number, current_energy,
+          spectral_number != nullptr ? spectral_number : current_number,
+          spectral_energy != nullptr ? spectral_energy : current_energy,
           params->gra_target_mean ? number : local_number,
           params->gra_target_mean ? energy : local_energy, en, ej, an, aj, sc);
     }

@@ -216,6 +216,11 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
 
         Real J[M1_TOTAL_NUM_SPECIES]{};
         Real rnnu[M1_TOTAL_NUM_SPECIES]{};
+        // Spectral inputs use the stored lab number and W*(E-F_i*v^i), not J/n
+        // from the capped number conversion. The shared density weight cancels
+        // in their ratio; spectral_energy is a numerator, not the comoving J.
+        Real spectral_number[M1_TOTAL_NUM_SPECIES]{};
+        Real spectral_energy[M1_TOTAL_NUM_SPECIES]{};
         bool point_finite = Kokkos::isfinite(volform) && volform > 0.0 &&
                             Kokkos::isfinite(w_lorentz) && w_lorentz > 0.0;
         for (int s = 0; s < nspecies_; ++s) {
@@ -226,6 +231,11 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
                    u0_(m, CombinedIdx(s, M1_FY_IDX, nvars_), k, j, i),
                    u0_(m, CombinedIdx(s, M1_FZ_IDX, nvars_), k, j, i), F_d);
           const Real E = u0_(m, CombinedIdx(s, M1_E_IDX, nvars_), k, j, i);
+          const Real N = u0_(m, CombinedIdx(s, M1_N_IDX, nvars_), k, j, i);
+          Real Fv = 0.0;
+          for (int a = 1; a < 4; ++a) Fv += F_d(a)*v_u(a);
+          spectral_number[s] = N;
+          spectral_energy[s] = w_lorentz*(E - Fv);
           AthenaPointTensor<Real, TensorSymm::SYM2, 4, 2> P_dd{};
           apply_closure(g_dd, g_uu, n_d, w_lorentz, u_u, v_d, proj_ud, E, F_d,
                         chi_(m, s, k, j, i), P_dd, m1_params_);
@@ -238,7 +248,7 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
           const Real gamma = radiation_number_gamma(
               E, J[s], F_d, v_u, w_lorentz, m1_params_);
           enforce_comoving_moment_safety(g_dd, g_uu, u_u, J[s], H_d, m1_params_);
-          rnnu[s] = u0_(m, CombinedIdx(s, M1_N_IDX, nvars_), k, j, i)/gamma;
+          rnnu[s] = N/gamma;
           point_finite = point_finite && Kokkos::isfinite(J[s]) &&
                          Kokkos::isfinite(rnnu[s]);
         }
@@ -381,7 +391,7 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
         // The non-LTE factor uses each evolved group's mean energy. Although
         // the heavy emissivity starts from one channel, the corrected rates
         // and the absorption coefficients inferred below can differ by group.
-        // Apply the non-LTE E_nu^2 correction from the actual M1 mean energy. The factor
+        // Apply the non-LTE E_nu^2 correction from W*(E-F_i*v^i)/N. The factor
         // is referenced to the local matter equilibrium, which is the state every raw
         // coefficient above was evaluated at. Final selected-target closure is a
         // separate operation: it reconstructs electron CC emission and infers heavy
@@ -390,30 +400,10 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
         // False retains the standard corrected-coefficient predictor. True
         // builds targets with uncorrected inputs and corrects only afterward.
         if (!weakrates_params_.gra_opacity_order) {
-          for (int s = 0; s < nspecies_; ++s) {
-            Real corr = 1.0;
-            if (nudens_0[s] > 0.0 && nudens_1[s] > 0.0 && neq_0_loc[s] > 0.0 &&
-                neq_1_loc[s] > 0.0) {
-              Real ratio = (nudens_1[s]/nudens_0[s])*(neq_0_loc[s]/neq_1_loc[s]);
-              if (Kokkos::isfinite(ratio)) {
-                ratio = Kokkos::fmax(1.0/weakrates_params_.opacity_corr_fac_max,
-                                     Kokkos::fmin(ratio,
-                                                  weakrates_params_.opacity_corr_fac_max));
-                corr = ratio*ratio;
-              }
-            }
-            scat_1_loc[s] *= corr;
-            if (s < 2) {
-              // Charged-current kind: the opacity is the microscopic input.
-              abs_0_loc[s] *= corr;
-              abs_1_loc[s] *= corr;
-            } else {
-              // Emission-only kind: the emissivity is the microscopic input, and the
-              // rebuild below derives the opacity from it.
-              eta_0_loc[s] *= corr;
-              eta_1_loc[s] *= corr;
-            }
-          }
+          weakrates::ApplySpectralCorrection(
+              nspecies_, weakrates_params_.opacity_corr_fac_max,
+              spectral_number, spectral_energy, neq_0_loc, neq_1_loc,
+              eta_0_loc, eta_1_loc, abs_0_loc, abs_1_loc, scat_1_loc);
         }
 
         // Weakrates has spontaneous heavy emission but no raw heavy absorption.
@@ -549,7 +539,8 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
           const weakrates::GraTargetValidation validation{
               &raw, &weakrates_params_, nudens_0, nudens_1,
               neq_0_loc, neq_1_loc, eta_0_loc, eta_1_loc,
-              abs_0_loc, abs_1_loc, scat_1_loc, thermal_enabled};
+              abs_0_loc, abs_1_loc, scat_1_loc, thermal_enabled,
+              spectral_number, spectral_energy};
           const auto equilibrium = weakrates::BuildGraEquilibriumTargets(
               eos, nb, temp, ye, dt_, raw.abs_1, raw.scat_1,
               nudens_0, nudens_1, neq_0_loc, neq_1_loc,
@@ -645,7 +636,7 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
               weakrates_params_.gra_target_mean ? neq_1_star : neq_1_loc;
           weakrates::ApplySpectralCorrection(
               nspecies_, weakrates_params_.opacity_corr_fac_max,
-              nudens_0, nudens_1, reference_number, reference_energy,
+              spectral_number, spectral_energy, reference_number, reference_energy,
               eta_0_loc, eta_1_loc, abs_0_loc, abs_1_loc, scat_1_loc);
         }
 

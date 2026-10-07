@@ -74,8 +74,11 @@ matter. This bounded search is not a global-minimum certificate for a nonconvex 
 
 Candidate acceptance checks final interpolated moments, spectral corrections,
 Kirchhoff products/quotients, and enabled thermal reference requirements using
-temporary coefficient copies. Thermal checks also require finite `q/B_E`, current
-comoving-number/reference ratios, their pair product, and the resulting pair rate
+temporary coefficient copies. Deferred spectral previews use the same dedicated
+lab N and W*(E-Fv) inputs as publication, not the converted J/n mean. Physical
+comoving numbers remain separate for the thermal checks. Thermal checks also
+require finite `q/B_E`, current comoving-number/reference ratios, their pair
+product, and the resulting pair rate
 and partner-dependent absorption. These checks cover target-dependent failures at
 the current state; the consumer still validates future implicit trial states.
 An unusable trial cannot modify the published state
@@ -116,15 +119,33 @@ The target switch independently decides whether the selected moments come
 from the standard predictor or the raw-timescale/full-endpoint policy.
 Microscopic rates remain evaluated at local matter state, not endpoint matter.
 
-For each species the factor is
+For eligible positive inputs, each species uses the factor
 
 ```text
-c = clamp[(J/N)*(N_reference/J_reference), 1/f, f]^2
+Fv = sum_i F_i*v^i
+mean_incoming = W*(E-Fv)/N
+c = clamp[mean_incoming*(N_reference/J_reference), 1/f, f]^2
 f = opacity_corr_fac_max
 ```
 
-Current `J` and `N` are fluid-frame quantities. The shared number conversion
-uses unrepaired E/F/J before the separate moment-safety repair.
+Here E, F_i and N are the stored densitized lab moments, v^i is the ordinary
+Eulerian velocity (not the primitive W*v^i), and W is the fluid Lorentz factor.
+The shared density weight cancels in the incoming mean. This direct expression
+matches GRA's default opacity-mean branch for finite positive eligible states;
+it bypasses the number-conversion cap for spectral correction only. Both
+opacity-order paths use it, including the default with all options false.
+Nonpositive current/reference inputs or a nonfinite ratio retain the neutral
+factor policy; no new floor or GRA zero/invalid-state policy is introduced.
+
+The shared number conversion still uses unrepaired E/F/J and the capped factor
+min(1-Fv/E, 1-1e-5) before separate moment safety. Its converted number and
+energy moments still feed equilibrium selection and source accounting; they
+are not replaced by the dedicated spectral inputs. Removing the cap from the
+incoming mean can change predictor weights and selected targets indirectly,
+without changing those algorithms. Selected thermal references may consequently
+change, although raw thermal r,q remain uncorrected. This does not reproduce
+GRA's alternative fiducial J/n estimate or its trapped-cell correction bypass.
+
 Scattering and electron CC absorption are multiplied by `c`. Electron emission
 is reconstructed at the selected moments. Heavy spontaneous emission is
 multiplied by `c` and retained; heavy absorption is inferred at the selected
@@ -164,10 +185,27 @@ solver validation remains outstanding.
 
 ## Verification boundary
 
-With all four options omitted or explicitly false, the standard source and
-weighted-opacity paths remain unchanged apart from the unconditional number/frame
-prescription. Focused source comparisons and interpreted formula checks cover
-these paths, all 16 switch combinations, target-selection boundaries,
-conserved SFHo roots, spectral clamping, and heavy Kirchhoff reconstruction.
-They are not a C++ build, device test, or simulation validation. Compiled and
-physical comparison tests remain required before production use.
+The direct incoming opacity mean is unconditional, including with all four
+options omitted or false. It intentionally changes the former capped J/n
+spectral correction; number conversion and source accounting retain their
+existing prescriptions. Historical pre-thermal bitwise opacity records are
+not an unchanged-policy oracle for this revision and must not be silently
+regenerated or exempted from comparison.
+
+`tst/test_weakrates_opacity_mean.py BUILD_DIR` is the focused standalone runner
+for the direct mean and real coefficient publication. It requires fresh
+Makefiles objects from this checkout, double precision, MPI/OpenMP off, and
+Serial or CUDA; WeakRates supports four groups with NuRATES disabled here.
+It does not require a historical reference, configure/rebuild the code, or run
+a simulation loop. The fixture covers counter-streaming/rest/co-streaming,
+geometry and velocity conventions, ordering/target-mean combinations, species
+closure, conversion-cap preservation, spectral-preview/thermal-input separation,
+guards and stage hold. These are
+regression sources only until compiled and executed; no passing native or
+CUDA result is established for the direct-mean revision.
+
+Earlier source comparisons and interpreted formula checks concerned the
+prior paths, switch combinations, target-selection boundaries, conserved
+SFHo roots, spectral clamping and heavy Kirchhoff reconstruction. They do not
+verify this revision. Compiled and physical comparison tests remain required
+before production use.
