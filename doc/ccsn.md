@@ -69,12 +69,14 @@ tau overwrite is deliberately not ported. `update_entropy` retains its selected
 behavior. The entropy accessor is per baryon, not the existing per-mass accessor;
 `bdm_spb_max` is entropy per baryon in k_B for geometric-solar units.
 
-Entropy inversion delegates to the existing CompOSE interpolation helper. It
-does not change the shared energy/pressure inversion or add a table-boundary
-clamping policy. Out-of-range behavior inherits that helper's assertion or
-extrapolation behavior; the pgen rejects nonfinite, nonpositive or out-of-table
-temperatures before another lookup. The table's bracketing and round-trip behavior need
-verification before production use.
+Entropy inversion delegates to the existing CompOSE interpolation helper without
+changing the shared energy/pressure inversion. The pgen rejects nonfinite or
+nonpositive recovered temperatures, then clamps finite positive results to the EOS
+temperature bounds before pressure recovery and temperature writeback. This local
+policy handles endpoint roundoff and also clips larger finite excursions; it does
+not guarantee the requested entropy is retained when clipping occurs. Assertions
+inside the interpolation helper remain unchanged. The table's bracketing and
+round-trip behavior need verification before production use.
 
 ## M1 activation choices
 

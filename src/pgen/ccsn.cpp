@@ -1049,10 +1049,8 @@ void DeleptonizationImpl(Mesh *pm) {
         Real T_new = eos_.GetTemperatureFromEntropy(n, s_per_baryon, Y_new);
 
         // In geometric-solar units both wrapper and EOS temperatures are MeV.
-        // Reject an inherited unbracketed extrapolation before a new EOS lookup;
-        // do not clamp entropy or change the shared inverse-temperature policy.
-        if (!Kokkos::isfinite(T_new) || !(T_new > 0.0) ||
-            T_new < T_min || T_new > T_max) {
+        // Reject invalid results before clamping can conceal them.
+        if (!Kokkos::isfinite(T_new) || !(T_new > 0.0)) {
           const Real s_at_T_min = eos_.GetEntropyPerBaryon(n, T_min, Y_new);
           const Real s_at_T_max = eos_.GetEntropyPerBaryon(n, T_max, Y_new);
           // The first failing cell owns the report. The host reads it only
@@ -1068,6 +1066,10 @@ void DeleptonizationImpl(Mesh *pm) {
           }
           return;
         }
+        // Bound finite positive results before another EOS lookup. This local
+        // policy clips endpoint roundoff and larger excursions without changing
+        // the shared inverse or guaranteeing entropy preservation after clipping.
+        T_new = fmax(T_min, fmin(T_max, T_new));
         w0_(m, IPR, k, j, i) = eos_.GetPressure(n, T_new, Y_new);
         temperature_(m, 0, k, j, i) = T_new;
       });

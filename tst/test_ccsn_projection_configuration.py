@@ -327,6 +327,20 @@ def test_ccsn_cell_centered_temperature_state_and_entropy_failure_line():
     assert "temperature_(m, 0, k, j, i) = T_new;" in deleptonization
     assert "initial_prim[PTM] = temperature(m, 0, k, j, i);" in projection
 
+    # Invalid results must fail before clamping can conceal them; finite positive
+    # results are bounded before either pressure recovery or temperature writeback.
+    guard = "if (!Kokkos::isfinite(T_new) || !(T_new > 0.0)) {"
+    clamp = "T_new = fmax(T_min, fmin(T_max, T_new));"
+    pressure = "w0_(m, IPR, k, j, i) = eos_.GetPressure(n, T_new, Y_new);"
+    assert guard in deleptonization
+    assert "T_new < T_min || T_new > T_max" not in deleptonization
+    guard_start = deleptonization.index(guard)
+    failure_return = deleptonization.index("return;", guard_start)
+    assert guard_start < failure_return < deleptonization.index(clamp)
+    assert deleptonization.index(clamp) < deleptonization.index(pressure)
+    assert deleptonization.index(pressure) < deleptonization.index(
+        "temperature_(m, 0, k, j, i) = T_new;")
+
     call_start = deleptonization.index("std::snprintf")
     call = deleptonization[call_start : deleptonization.index(");", call_start) + 2]
     format_string, arguments = printf_arguments(call, format_index=2)
