@@ -28,7 +28,7 @@ struct WeakRatesParams {
   Real peq_dlnT_tol;
   Real peq_dYe_tol;
   bool use_partial_equilibrium;
-  // Full conserved endpoint and raw-electron-timescale moment selection.
+  // Conserving/best-found bounded endpoint and raw-electron-timescale selection.
   // When false, the existing partial-equilibrium controls retain their meaning.
   bool gra_equilibrium_targets = false;
   // Defer spectral correction until after target prediction/selection.

@@ -13,6 +13,7 @@
 #include "athena.hpp"
 #include "coordinates/adm.hpp"
 #include "dyn_grmhd/dyn_grmhd.hpp"
+#include "globals.hpp"
 #include "eos/primitive-solver/unit_system.hpp"
 #include "radiation_m1/radiation_m1.hpp"
 #include "radiation_m1/radiation_m1_helpers.hpp"
@@ -123,6 +124,18 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
   constexpr Real peq_cv_eps = 1.0e-2;
   constexpr Real peq_trust_c = 10.0;
   constexpr int peq_max_halvings = 4;
+
+  // Small per-pack diagnostics, allocated only for GRA selection. Count physical
+  // interior cells once at stage 1; ghost evaluations do not inflate statistics.
+  // These Views outlive the kernel and host readback; there is no mesh-sized log.
+  DvceArray1D<unsigned long long> equilibrium_counts;
+  DvceArray1D<Real> equilibrium_diagnostics;
+  if (weakrates_params_.gra_equilibrium_targets) {
+    equilibrium_counts = DvceArray1D<unsigned long long>("gra_equilibrium_counts", 3);
+    equilibrium_diagnostics = DvceArray1D<Real>("gra_equilibrium_diagnostics", 14);
+    Kokkos::deep_copy(equilibrium_counts, 0ULL);
+    Kokkos::deep_copy(equilibrium_diagnostics, 0.0);
+  }
 
   par_for(
       "radiation_m1_calc_opacity_weakrates", DevExeSpace(), 0, nmb1, ks_op, ke_op,
@@ -530,14 +543,52 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
         Real neq_0_star[M1_TOTAL_NUM_SPECIES]{};
         Real neq_1_star[M1_TOTAL_NUM_SPECIES]{};
         if (point_finite && weakrates_params_.gra_equilibrium_targets) {
-          // Raw selector uses mesh dt, not dt*alpha/W. Failure is explicit:
-          // a constrained/energy-only root is not full conserved equilibrium.
-          if (!weakrates::BuildGraEquilibriumTargets(
-                  eos, nb, temp, ye, dt_, raw.abs_1, raw.scat_1,
-                  nudens_0, nudens_1, neq_0_loc, neq_1_loc,
-                  neq_0_star, neq_1_star)) {
-            Kokkos::abort("WEAKRATES GRA equilibrium: no conserving interior "
-                          "target for the current energy/lepton budgets");
+          // Raw selector uses mesh dt, not dt*alpha/W. Validate prospective
+          // coefficients on copies so a subnormal or overflowing trial cannot
+          // win selection and merely move the failure to the thermal consumer.
+          const weakrates::GraTargetValidation validation{
+              &raw, &weakrates_params_, nudens_0, nudens_1,
+              neq_0_loc, neq_1_loc, eta_0_loc, eta_1_loc,
+              abs_0_loc, abs_1_loc, scat_1_loc, thermal_enabled};
+          const auto equilibrium = weakrates::BuildGraEquilibriumTargets(
+              eos, nb, temp, ye, dt_, raw.abs_1, raw.scat_1,
+              nudens_0, nudens_1, neq_0_loc, neq_1_loc,
+              neq_0_star, neq_1_star, &validation);
+          if (!equilibrium.usable()) {
+            Kokkos::printf("WEAKRATES GRA equilibrium invalid/unusable target: "
+                           "cell=(%d,%d,%d,%d), quality=%d, eos_status=%d\n",
+                           m, k, j, i, static_cast<int>(equilibrium.status),
+                           equilibrium.eos_status);
+            Kokkos::abort("WEAKRATES GRA equilibrium: invalid inputs/configuration "
+                          "or no publishable target, including local fallback");
+          }
+          if (equilibrium.approximate() && i >= is && i <= ie &&
+              j >= js && j <= je && k >= ks && k <= ke) {
+            const auto previous = Kokkos::atomic_fetch_add(&equilibrium_counts(0), 1ULL);
+            if (equilibrium.status == weakrates::GraEquilibriumStatus::LocalFallback) {
+              Kokkos::atomic_add(&equilibrium_counts(1), 1ULL);
+            }
+            Kokkos::atomic_add(&equilibrium_counts(2),
+                              static_cast<unsigned long long>(equilibrium.evaluations));
+            Kokkos::atomic_max(&equilibrium_diagnostics(0), equilibrium.score);
+            Kokkos::atomic_max(&equilibrium_diagnostics(1),
+                              equilibrium.normalized_energy_defect);
+            Kokkos::atomic_max(&equilibrium_diagnostics(2),
+                              equilibrium.normalized_lepton_defect);
+            if (previous == 0ULL) {
+              // One representative (not necessarily worst) fallback per pack.
+              equilibrium_diagnostics(3) = equilibrium.temp;
+              equilibrium_diagnostics(4) = equilibrium.ye;
+              equilibrium_diagnostics(5) = equilibrium.energy_defect;
+              equilibrium_diagnostics(6) = equilibrium.lepton_defect;
+              equilibrium_diagnostics(7) = equilibrium.score;
+              equilibrium_diagnostics(8) = equilibrium.eos_status;
+              equilibrium_diagnostics(9) = equilibrium.on_boundary ? 1.0 : 0.0;
+              equilibrium_diagnostics(10) = m;
+              equilibrium_diagnostics(11) = k;
+              equilibrium_diagnostics(12) = j;
+              equilibrium_diagnostics(13) = i;
+            }
           }
         } else if (point_finite) {
           Real ye_star_arr[3] = {ye_star, 0.0, 0.0};
@@ -650,6 +701,29 @@ TaskStatus RadiationM1::CalcOpacityWeakRates_(Driver *pdrive, int stage) {
               thermal.energy[1];
         }
       });
+  if (weakrates_params_.gra_equilibrium_targets) {
+    auto counts = Kokkos::create_mirror(equilibrium_counts);
+    Kokkos::deep_copy(counts, equilibrium_counts);
+    if (counts(0) > 0ULL) {
+      auto diagnostic = Kokkos::create_mirror(equilibrium_diagnostics);
+      Kokkos::deep_copy(diagnostic, equilibrium_diagnostics);
+      std::cout << "WEAKRATES GRA equilibrium fallback: rank=" << global_variable::my_rank
+                << ", cycle=" << pmy_pack->pmesh->ncycle
+                << ", cells=" << counts(0) << ", local_safety=" << counts(1)
+                << ", evaluations=" << counts(2) << ", max_score=" << diagnostic(0)
+                << ", max_abs_dE_over_SE=" << diagnostic(1)
+                << ", max_abs_dYL_over_SL=" << diagnostic(2)
+                << ", representative_cell=(" << static_cast<int>(diagnostic(10))
+                << ',' << static_cast<int>(diagnostic(11))
+                << ',' << static_cast<int>(diagnostic(12))
+                << ',' << static_cast<int>(diagnostic(13))
+                << "), T=" << diagnostic(3) << ", Ye=" << diagnostic(4)
+                << ", dE=" << diagnostic(5) << ", dYL=" << diagnostic(6)
+                << ", score=" << diagnostic(7)
+                << ", eos_status=" << static_cast<int>(diagnostic(8))
+                << ", boundary=" << static_cast<int>(diagnostic(9)) << '\n';
+    }
+  }
   return TaskStatus::complete;
 }
 

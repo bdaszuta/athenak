@@ -35,18 +35,69 @@ The implementation evaluates this stably without overflowing the product.
 Nonpositive absorption gives infinite relaxation time. The selected moments are:
 
 - `tau >= dt`: local matter equilibrium.
-- `tau <= dt/2`: full conserved equilibrium.
-- `dt/2 < tau < dt`: `(1-lambda)*local + lambda*full`, where
+- `tau <= dt/2`: full-equilibrium endpoint, or its best usable in-table approximation.
+- `dt/2 < tau < dt`: `(1-lambda)*local + lambda*endpoint`, where
   `lambda = 2*(1-tau/dt)`.
 
 Interpolation acts on number/energy moments, not on temperature or Ye.
-The full endpoint uses all four current radiation energy groups, the electron
+The endpoint uses all four current radiation energy groups, the electron
 lepton budget, and unit weights in the EOS trapped-neutrino solver. Each heavy
-transport slot contains two states. Analytic energy/lepton residuals and the
-interior root status are checked before publishing moments. A constrained,
-energy-only, failed, or nonconserving endpoint aborts explicitly; it is not
-silently replaced by the weighted solution. The local-only regime does not
-need a full endpoint.
+transport slot contains two states. A conserving interior or table-edge root
+is accepted using the unchanged analytic residual tolerance, not the approximate
+WeakRates FD target moments. The local-only regime does not need a full endpoint.
+
+When an exact usable root is unavailable, table-bound exhaustion and Newton
+failure are recoverable. Keep the original budgets and score in-table candidates:
+
+```text
+dE  = EOS_matter_energy + sum(three analytic neutrino-pair energies) - E_rhs
+dYL = Ye + analytic_net_electron_neutrino_number_in_EOS_units/nb - YL_rhs
+score = hypot(dE/S_E, dYL/S_L)
+S_E = max(sum(current_J) + abs(e_local - e(nb,T_min,Ye_local)), eps*abs(E_rhs))
+S_L = max(abs(Ye_local) + (current_N_nue + current_N_anti)/nb, eps*(Ye_max-Ye_min))
+```
+
+`eps` is machine epsilon, used only to keep scales positive. Scales are fixed
+per cell. The energy scale measures warm-matter/radiation exchange rather than
+rest-mass energy; the lepton scale avoids division by a cancelling signed budget.
+Exactly zero `YL_rhs` bypasses the legacy EOS solve's singular norm. Its conserving
+classification instead uses `S_L` for the lepton residual, with the same tolerance.
+
+Retain the EOS-returned constrained, energy-only, or finite failed endpoint and
+local safety target. Search all four table edges, including corners, using 16
+coarse intervals and up to 48 golden refinements per sampled minimum. Refine the
+returned, local, and best-found states inside the domain with up to 96 eight-direction
+polls in normalized log-temperature/Ye coordinates. All accepted targets are scored
+independently; EOS status is provenance, not acceptance. Retain the best usable
+candidate even on stalled refinement. Equal scores are resolved by proximity to local
+matter. This bounded search is not a global-minimum certificate for a nonconvex table.
+
+Candidate acceptance checks final interpolated moments, spectral corrections,
+Kirchhoff products/quotients, and enabled thermal reference requirements using
+temporary coefficient copies. Thermal checks also require finite `q/B_E`, current
+comoving-number/reference ratios, their pair product, and the resulting pair rate
+and partner-dependent absorption. These checks cover target-dependent failures at
+the current state; the consumer still validates future implicit trial states.
+An unusable trial cannot modify the published state
+or win merely because its analytic residual is small. Raw rates remain evaluated
+at local matter; no target floors, EOS extrapolation, budget modification, or
+weighted-predictor substitution is introduced. The evolved state, limiter, and
+paired material feedback are unchanged.
+
+Quality distinguishes local selection, conserving equilibrium, approximate
+endpoint, local safety fallback, unsupported/invalid inputs, and no usable target.
+One summary per pack per mesh timestep reports interior-cell fallback counts,
+local-safety counts, evaluation totals, worst normalized score and separate
+absolute normalized energy/lepton defects, and one representative cell with
+signed defects and EOS status. Ghost cells are
+still evaluated but excluded from these counts; no mesh-sized diagnostic arrays
+or per-cell warning stream are added.
+
+Abort only for unsupported/invalid inputs or no publishable candidate, including
+the local safety target. A non-interior status, nonzero approximation defect, or
+failed Newton solve alone does not abort or turn a usable cell transparent.
+Existing original microscopic-invalidity zeroing and independent thermal/source
+invariant failures retain their policies.
 
 This path currently requires the native-nuclear, one-species CompOSE-like EOS
 used by WeakRates. It does not inherit the `use_partial_equilibrium` enable
