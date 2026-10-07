@@ -16,6 +16,7 @@
 #include "parameter_input.hpp"
 
 using ProblemFinalizeFnPtr = void (*)(ParameterInput *pin, Mesh *pm);
+using ProblemInitializeFnPtr = void (*)(ParameterInput *pin, Mesh *pm);
 using UserBoundaryFnPtr = void (*)(Mesh *pm);
 using UserSrctermFnPtr = void (*)(Mesh *pm, const Real bdt);
 using UserRefinementFnPtr = void (*)(MeshBlockPack *pmbp);
@@ -48,6 +49,10 @@ class ProblemGenerator {
   // function pointer for final work after main loop (e.g. compute errors).
   // Called by Driver::Finalize()
   ProblemFinalizeFnPtr pgen_final_func = nullptr;
+  // Optional one-shot state initialization after startup AMR, native C2P and
+  // excision setup. Driver refreshes boundaries/primitives after it, before dt
+  // or initial outputs; construction and runtime AMR never invoke this hook.
+  ProblemInitializeFnPtr pgen_init_func = nullptr;
   // function pointer for user-enrolled BCs.  Called in ApplyPhysicalBCs in task
   // list
   UserBoundaryFnPtr user_bcs_func = nullptr;

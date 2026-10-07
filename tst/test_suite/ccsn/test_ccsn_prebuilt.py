@@ -105,19 +105,20 @@ def _deck(ccsn, mode="transport", feedback=(True, True)):
         pgen_name="ccsn", progenitor=str(ccsn["PROGENITOR"]), user_hist="true",
         refinement_method="none", update_conserved="false", detect_bounce="true",
         bounce_detection_method="entropy", bdm_rho_min="1e99", bdm_spb_max="3.0",
-        inject_equilibrium="false", stop_at_bounce="false", post_bounce="false",
+        inject_equilibrium="false", equilibrium_injected="false",
+        stop_at_bounce="false", post_bounce="false",
         t_bounce="0", D_max_bounce="0", stop_before_m1="false",
         prebounce_core_coupling=str(mode == "core").lower(),
         recoupling_approach=str(mode in ("transport", "core")).lower(),
-        equilibriate_post_bounce=str(mode == "projection").lower(),
+        equilibriate_post_bounce=str(mode in ("projection", "direct")).lower(),
         conservative_bounce_projection=str(mode == "projection").lower())
     if mode == "core":
         blocks["problem"]["deleptonization_method"] = "Liebendoerfer"
         blocks["problem"]["rho_trap"] = "1.0e12"
         blocks["radiation_m1"].update(backreact="true", backreact_tmunu="true")
-    if mode == "projection":
+    if mode in ("projection", "direct"):
         for name in ("eql_rho_min_cgs", "eql_t_min_mev"):
-            assert name in blocks["problem"], f"Supply physical projection cutoff {name}"
+            assert name in blocks["problem"], f"Supply physical equilibrium cutoff {name}"
     for number, (name, variable) in enumerate(OUTPUTS.items(), 1):
         blocks[f"output{number}"] = dict(file_type="bin", variable=variable,
                                          id=name, dcycle="1", single_file_per_rank="false")
@@ -222,7 +223,7 @@ def _flag(snapshot, block, key):
 def _mode(snapshot, mode, feedback, bounced):
     assert _flag(snapshot, "problem", "prebounce_core_coupling") == (mode == "core")
     assert _flag(snapshot, "problem", "recoupling_approach") == (mode in ("transport", "core"))
-    assert _flag(snapshot, "problem", "equilibriate_post_bounce") == (mode == "projection")
+    assert _flag(snapshot, "problem", "equilibriate_post_bounce") == (mode in ("projection", "direct"))
     assert _flag(snapshot, "problem", "conservative_bounce_projection") == (mode == "projection")
     assert not _flag(snapshot, "problem", "inject_equilibrium")
     assert not _flag(snapshot, "problem", "update_conserved")
@@ -254,7 +255,6 @@ def test_legacy_omitted_and_explicit_false_core_option(ccsn, tmp_path, feedback)
     ("problem", "detect_bounce", "false", "detect_bounce"),
     ("problem", "equilibriate_post_bounce", "true", "equilibriate_post_bounce"),
     ("problem", "conservative_bounce_projection", "true", "conservative_bounce_projection"),
-    ("problem", "inject_equilibrium", "true", "nonconservative M1 injection"),
     ("problem", "deleptonization_method", "None", "deleptonization_method"),
     ("problem", "rho_trap", "0", "rho_trap"),
     ("problem", "rho_trap", "-1", "rho_trap"),
@@ -545,10 +545,189 @@ def test_projection_transition_and_postbounce_restart(ccsn, tmp_path):
         assert new_hist[key] == pytest.approx(old_hist[key], rel=1e-13)
 
 
+def _equilibrium_deck(ccsn, mode="masked"):
+    """Use real thermodynamics and a resolved hot-cell gate, never synthetic ICs."""
+    deck = _deck(ccsn, mode)
+    for key in ("eql_rho_min_cgs", "eql_t_min_mev"):
+        assert key in deck["problem"], f"Supply physical equilibrium cutoff {key}"
+    # Match the existing conservative transition case's test-only density gate.
+    # Keep the supplied temperature cutoff, EOS and profile unchanged. No selected
+    # hot cells is a failure, not fabricated coverage or a reason to lower floors.
+    deck["problem"]["eql_rho_min_cgs"] = "1e7"
+    if mode != "core":
+        deck["problem"]["deleptonization_method"] = "None"
+    return deck
+
+
+def _equilibrium_signal(ccsn, snapshot, baseline=None):
+    """Require resolved energy AND number moments in every equilibrium group."""
+    np = ccsn["np"]
+    radiation = snapshot["fields"]["radiation"]
+    parameters = snapshot["parameters"]["radiation_m1"]
+    for species in range(4):
+        for variable, floor_key in (("E", "rad_E_floor"), ("N", "rad_N_floor")):
+            key = f"{variable}:{species}"
+            values = radiation[key]
+            assert (values > 0).any(), f"No positive {key}: need selected real hot cells"
+            # A factor of two separates a signal from the float32 rounding of an
+            # initialized floor; it is not a solver/conservation tolerance.
+            floor = float(parameters[floor_key])
+            assert (values > 2 * floor).any(), f"Only floor-scale {key}, not equilibrium coverage"
+            if baseline is not None:
+                old = baseline["fields"]["radiation"][key]
+                assert not np.array_equal(values, old), f"Initialization did not change {key}"
+
+
+def _manual_state(snapshot, mode="masked", bounce_init=False, conservative=False):
+    """A consumed request persists as a marker, never as a fictitious bounce."""
+    assert not _flag(snapshot, "problem", "inject_equilibrium")
+    assert _flag(snapshot, "problem", "equilibrium_injected")
+    assert not _flag(snapshot, "problem", "post_bounce")
+    assert _flag(snapshot, "problem", "conservative_bounce_projection") == conservative
+    assert _flag(snapshot, "problem", "equilibriate_post_bounce") == bounce_init
+    assert _flag(snapshot, "problem", "recoupling_approach") == (mode in ("transport", "core"))
+    assert _flag(snapshot, "problem", "prebounce_core_coupling") == (mode == "core")
+    assert not _flag(snapshot, "problem", "update_conserved")
+    assert float(snapshot["parameters"]["problem"]["t_bounce"]) == 0
+    assert float(snapshot["parameters"]["problem"]["D_max_bounce"]) == 0
+    for key in ("backreact", "backreact_tmunu"):
+        assert _flag(snapshot, "radiation_m1", key), "Do not rewrite configured feedback"
+
+
+@pytest.mark.parametrize("conservative", (False, True))
+def test_manual_equilibrium_requires_native_matter_recovery(ccsn, tmp_path, conservative):
+    """Fixed evolution cannot supply recovered startup temperature or primitives."""
+    deck = _equilibrium_deck(ccsn)
+    deck["time"]["nlim"] = "0"
+    deck["mhd"]["fixed"] = "true"
+    deck["problem"].update(inject_equilibrium="true", detect_bounce="false",
+                           conservative_bounce_projection=str(conservative).lower())
+    _run(ccsn, tmp_path / "fixed-rejected", deck, failure="mhd/fixed=false")
+
+
+def test_manual_conservative_startup_without_bounce_init(ccsn, tmp_path):
+    """An explicit request also reaches the retained conservative selector."""
+    deck = _equilibrium_deck(ccsn)
+    deck["time"]["nlim"] = "0"
+    deck["problem"].update(detect_bounce="false", inject_equilibrium="true",
+                           conservative_bounce_projection="true")
+    directory = tmp_path / "manual-conservative"
+    log = _run(ccsn, directory, deck)
+    assert "manual M1 equilibrium projected conservatively." in log
+    state = _snapshot(ccsn, directory)
+    assert state["cycle"] == 0 and state["time"] == 0
+    _manual_state(state, conservative=True)
+    _equilibrium_signal(ccsn, state)
+    # Resolved moments and consumed state must already be present at startup.
+    # Full-precision conservation remains the projection fixture's contract.
+    _same(ccsn, state, _snapshot(ccsn, directory, first=True))
+
+
+def test_direct_bounce_preserves_same_hydro_step_matter(ccsn, tmp_path):
+    """Force the same entropy stop with and without automatic direct injection."""
+    deck = _equilibrium_deck(ccsn, "direct")
+    deck["problem"].update(TRIGGER, stop_at_bounce="true")
+    deck["time"]["nlim"] = "3"
+    direct_dir = tmp_path / "direct"
+    log = _run(ccsn, direct_dir, deck)
+    direct = _snapshot(ccsn, direct_dir)
+    assert "Terminating at bounce before the M1 split" in log
+    _mode(direct, "direct", (True, True), True)
+    assert not _flag(direct, "problem", "equilibrium_injected"), "Bounce is not a manual request"
+    deck["problem"]["equilibriate_post_bounce"] = "false"
+    control_dir = tmp_path / "uninitialized"
+    log = _run(ccsn, control_dir, deck)
+    control = _snapshot(ccsn, control_dir)
+    assert "Terminating at bounce before the M1 split" in log
+    assert direct["cycle"] == control["cycle"] == 1
+    assert direct["time"] == control["time"], "Controls must stop after the same hydro step"
+    _mode(control, "masked", (True, True), True)
+    _same(ccsn, control, direct, groups=("matter", "geometry"))
+    assert all((values == 0).all() for values in control["fields"]["radiation"].values())
+    _equilibrium_signal(ccsn, direct, baseline=control)
+
+
+@pytest.mark.parametrize("mode, bounce_init", (
+    ("masked", False), ("masked", True), ("transport", False), ("core", False)))
+def test_manual_direct_startup_no_steps(ccsn, tmp_path, mode, bounce_init):
+    """Explicit direct startup is independent of the automatic-bounce switch."""
+    deck = _equilibrium_deck(ccsn, mode)
+    deck["time"]["nlim"] = "0"
+    deck["problem"]["equilibriate_post_bounce"] = str(bounce_init).lower()
+    control_dir = tmp_path / "startup-control"
+    _run(ccsn, control_dir, deck)
+    control = _snapshot(ccsn, control_dir)
+    assert control["cycle"] == 0 and control["time"] == 0
+    assert not _flag(control, "problem", "equilibrium_injected")
+    deck["problem"]["inject_equilibrium"] = "true"
+    injected_dir = tmp_path / "startup-manual"
+    _run(ccsn, injected_dir, deck)
+    injected = _snapshot(ccsn, injected_dir)
+    _same(ccsn, control, injected, groups=("matter", "geometry"))
+    _manual_state(injected, mode, bounce_init)
+    _equilibrium_signal(ccsn, injected, baseline=control)
+    # The first native output must already see the consumed request and moments:
+    # end-of-run injection alone is too late to satisfy startup initialization.
+    _same(ccsn, injected, _snapshot(ccsn, injected_dir, first=True))
+
+
+@pytest.mark.parametrize("mode", ("masked", "transport", "core"))
+def test_manual_direct_restart_no_steps(ccsn, tmp_path, mode):
+    """Inject into checkpointed current matter without replaying real-profile ICs."""
+    deck = _equilibrium_deck(ccsn, mode)
+    deck["time"]["nlim"] = "1"
+    seed_dir = tmp_path / "seed"
+    _run(ccsn, seed_dir, deck)
+    seed = _snapshot(ccsn, seed_dir)
+    checkpoint = _restart(seed_dir)
+    missing = tmp_path / "must-not-read-progenitor"
+    overrides = ("time/nlim=1", f"problem/progenitor={missing}")
+    control_dir = tmp_path / "restart-control"
+    _run(ccsn, control_dir, restart=checkpoint, overrides=overrides)
+    control = _snapshot(ccsn, control_dir)
+    _same(ccsn, seed, control)
+    injected_dir = tmp_path / "restart-manual"
+    _run(ccsn, injected_dir, restart=checkpoint,
+         overrides=overrides + ("problem/inject_equilibrium=true",))
+    injected = _snapshot(ccsn, injected_dir)
+    assert injected["cycle"] == 1
+    _same(ccsn, control, injected, groups=("matter", "geometry"))
+    _manual_state(injected, mode)
+    _equilibrium_signal(ccsn, injected, baseline=control)
+    reload_dir = tmp_path / "consumed-no-step-reload"
+    _run(ccsn, reload_dir, restart=_restart(injected_dir), overrides=overrides)
+    reloaded = _snapshot(ccsn, reload_dir)
+    _manual_state(reloaded, mode)
+    _same(ccsn, injected, reloaded)
+
+
+@pytest.mark.parametrize("mode", ("masked", "transport", "core"))
+def test_consumed_manual_request_evolved_restart_not_replayed_or_erased(ccsn, tmp_path, mode):
+    """A persisted manual marker keeps evolved pre-bounce M1 through a roundtrip."""
+    deck = _equilibrium_deck(ccsn, mode)
+    deck["problem"]["inject_equilibrium"] = "true"
+    deck["time"]["nlim"] = "1"
+    evolved_dir = tmp_path / "manual-then-evolved"
+    _run(ccsn, evolved_dir, deck)
+    initialized = _snapshot(ccsn, evolved_dir, first=True)
+    evolved = _snapshot(ccsn, evolved_dir)
+    assert initialized["cycle"] == 0 and evolved["cycle"] == 1
+    _manual_state(initialized, mode)
+    _manual_state(evolved, mode)
+    _equilibrium_signal(ccsn, initialized)
+    _equilibrium_signal(ccsn, evolved)
+    assert any(not ccsn["np"].array_equal(values, initialized["fields"]["radiation"][key])
+               for key, values in evolved["fields"]["radiation"].items()), (
+        "No resolved post-injection evolution: cannot distinguish a replay from retention")
+    reload_dir = tmp_path / "evolved-reload"
+    _run(ccsn, reload_dir, restart=_restart(evolved_dir),
+         overrides=("time/nlim=1", f"problem/progenitor={tmp_path / 'absent-progenitor'}"))
+    reloaded = _snapshot(ccsn, reload_dir)
+    _manual_state(reloaded, mode)
+    _same(ccsn, evolved, reloaded)
+
+
 @pytest.mark.parametrize("change, message", (
-    ({"inject_equilibrium": "true"}, "nonconservative M1 injection"),
-    ({"equilibriate_post_bounce": "true", "recoupling_approach": "false"},
-     "nonconservative M1 injection"),
     ({"conservative_bounce_projection": "true"}, "recoupling requires"),
     ({"bounce_detection_method": "density"}, "bounce_detection_method=entropy"),
     ({"bounce_detection_method": "None"}, "bounce_detection_method=entropy"),

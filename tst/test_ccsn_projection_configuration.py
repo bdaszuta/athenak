@@ -66,9 +66,11 @@ def test_projection_header_uses_the_shared_equilibrium_interface():
 def test_projection_driver_asks_the_interface_which_backends_work():
     source = (ROOT / "src/pgen/ccsn.cpp").read_text(encoding="utf-8")
     projection = source.split("static bool ConservativeM1ProjectionImpl", 1)[1].split(
-        "// Per-cycle bounce check", 1
+        "static void ConservativeM1Projection(", 1
     )[0]
-    validation = source.split("if (conservative_bounce_projection)", 1)[1].split(
+    # A shared bounce/manual dispatcher also uses this selector. Restrict input
+    # validation to UserProblem, rather than accidentally inspecting that branch.
+    validation = source.split("void ProblemGenerator::UserProblem(", 1)[1].split(
         "if (detect_bounce)", 1
     )[0]
 
@@ -168,7 +170,8 @@ def test_projection_failure_instrumentation_reports_every_site():
     # The caller prints nothing while the projection succeeds, prints one line
     # per failed cell, and reports the metric instead of a state that cannot be
     # derived from it when the metric is not invertible.
-    projection = source.split("static bool ConservativeM1ProjectionImpl", 1)[1]
+    projection = source.split("static bool ConservativeM1ProjectionImpl", 1)[1].split(
+        "static void ConservativeM1Projection(", 1)[0]
     assert "ccsn::ProjectionFailureReport fail = {0, 0, -1, -1.0, 0, -1};" in projection
     assert ("ccsn::PrintProjectionFailureLine(rank, gid_start + m, k, j, i, fail,"
             in projection)
@@ -317,7 +320,7 @@ def test_ccsn_cell_centered_temperature_state_and_entropy_failure_line():
     deleptonization = source.split("void DeleptonizationImpl", 1)[1].split(
         "//! \\fn Deleptonization", 1)[0]
     projection = source.split("static bool ConservativeM1ProjectionImpl", 1)[1].split(
-        "// Per-cycle bounce check", 1)[0]
+        "static void ConservativeM1Projection(", 1)[0]
 
     for cell_centered_path in (history, bounce, deleptonization, projection):
         assert "GetTemperatureFromP" not in cell_centered_path

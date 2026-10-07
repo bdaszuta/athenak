@@ -80,6 +80,63 @@ round-trip behavior need verification before production use.
 
 ## M1 activation choices
 
+`equilibriate_post_bounce=true` initializes radiation automatically at entropy
+bounce. `conservative_bounce_projection` selects how: true uses the existing
+coupled conservative projection; false sets radiation directly at the current
+matter state. With `equilibriate_post_bounce=false`, ordinary masked-mode bounce
+only enables evolution and retains the radiation state. Recoupling/core modes
+still require automatic bounce initialization to be disabled.
+
+Direct equilibrium initialization:
+
+    <problem>
+    detect_bounce = true
+    bounce_detection_method = entropy
+    recoupling_approach = false
+    equilibriate_post_bounce = true
+    conservative_bounce_projection = false
+    inject_equilibrium = false
+
+Both methods use `eql_rho_min_cgs` (g/cm^3) and `eql_t_min_mev` (MeV), require
+CompOSE and a backend with four-group number/energy equilibrium densities, and
+skip excised or below-cutoff cells. `mhd/fixed=false` is required so native startup
+recovery supplies current matter primitives and temperature. Cutoffs must be
+finite and nonnegative. Direct initialization also requires a finite,
+positive-definite spatial metric, not merely a positive determinant.
+The direct method evaluates the existing equilibrium target at fixed density,
+temperature, Ye and velocity `W v^i`: isotropic fluid-frame moments are boosted
+to Eulerian `E,F_i,N` and multiplied by `sqrt(detg)`. It does not change matter
+primitives or subtract radiation from matter U. Combined energy, momentum and
+electron-lepton number therefore need not be conserved by this reset. Invalid
+or off-table cells are reported and retain all their previous radiation moments;
+all target components are validated before any cell component is published.
+The normal radiation floors and closure calculation remain in force.
+
+### Explicit startup/restart injection
+
+`inject_equilibrium=true` requests one explicit initialization, independent of
+`detect_bounce` and `equilibriate_post_bounce`. It uses the same conservative/direct
+selector and cutoffs as bounce initialization. No manual restart is needed for
+automatic bounce initialization; this key is an additional explicit reset request.
+Conservative manual initialization retains the projection's requirements on
+material collision sources, backreaction and its numerical controls.
+
+The pgen registers a one-shot initialization callback. Driver invokes it on the
+final startup hierarchy after native matter C2P, ADM and excision setup, including
+when the evolution step limit is zero. Boundary/primitive refresh and radiation
+floor/closure calculation follow, before timestep selection or initial outputs.
+The callback is not run during startup IC reevaluation or runtime AMR. It clears
+`inject_equilibrium` and persists `equilibrium_injected=true` in restart parameters.
+This is a lifecycle state marker, not another mode switch: a pre-bounce restart
+keeps the initialized radiation active without replaying the reset or falsely
+setting `post_bounce`, bounce diagnostics or disabling deleptonization. Setting
+`inject_equilibrium=true` again deliberately requests another reset.
+
+Manual injection also works with recoupling/core modes and leaves their configured
+feedback policy intact. It does not enable automatic equilibrium resetting at
+bounce in those modes. Fresh runs without an explicit request retain their
+previous zero-radiation initialization.
+
 Masked pre-bounce evolution with conservative equilibrium projection:
 
     <problem>
@@ -255,8 +312,10 @@ reaction controls, floors, mesh and output settings:
 mode requires dynamical relativistic GRMHD/ADM with CompOSE, exactly one `Ye`
 scalar, four-group number-evolving M1 with an equilibrium-capable opacity backend,
 material collision sources and both material/gravity feedback switches. If Z4c
-evolves spacetime, `backreact_tmunu=true` is required. Projection and equilibrium
-injection are incompatible. `gr_sources` independently controls geometric terms
+evolves spacetime, `backreact_tmunu=true` is required. Automatic bounce projection
+or equilibrium resetting is incompatible with this mode; an explicit one-shot
+manual initialization is allowed and retains the regional feedback policy.
+`gr_sources` independently controls geometric terms
 in the radiation equation; it is not the radiation-gravity feedback switch.
 Invalid combinations and nonfinite or nonpositive `rho_trap` fail at startup.
 Post-bounce restarts accept the persisted `deleptonization_method=None`.
@@ -279,8 +338,9 @@ a separate *current-time* override and is never frozen into this selection.
 | First following full step and later | On | On in nonexcised cells | On in nonexcised cells | Off |
 | Excised cells | Existing excision handling | Off | Off | Off in this mode |
 
-Fresh runs retain the existing recoupling initialization with zero radiation
-moments; an initially dense core is **not** seeded with an equilibrium reservoir.
+Unless `inject_equilibrium=true` is explicitly requested, fresh runs retain the
+existing recoupling initialization with zero radiation moments; an initially
+dense core is **not** automatically seeded with an equilibrium reservoir.
 Pre-bounce restarts retain stored moments and select cells from recovered
 primitives at the first pre-integrator task, not from unrecovered restart data.
 After runtime AMR or redistribution, that task reads current blocks and recovered
@@ -322,7 +382,7 @@ recoupling-mode restart retains its evolved radiation rather than zeroing it.
 For a post-bounce continuation test, explicitly set `stop_at_bounce=false`; a
 bounce-stop-only run does not test continuing recoupled evolution.
 
-Nonconservative equilibrium injection and alternative bounce/refinement criteria
-are deferred and rejected rather than silently substituted. Projection conservation,
+Alternative bounce/refinement criteria remain deferred and rejected rather than
+silently substituted. Direct/manual equilibrium initialization, projection conservation,
 entropy-table behavior, incomplete MPI receive progress, AMR/restart transitions,
 all 32 histories, and actual MI300A ownership transitions remain runtime checks.

@@ -1127,6 +1127,11 @@ static bool bounce_detected = false;
 static bool recoupling_approach = false;
 static bool equilibriate_post_bounce = true;
 static bool conservative_bounce_projection = false;
+// Explicit startup injection is deferred until native C2P has recovered matter.
+// Its consumed state persists across restart so lifecycle masking cannot erase
+// the initialized radiation without pretending that entropy bounce occurred.
+static bool manual_equilibrium_pending = false;
+static bool manual_equilibrium_active = false;
 // Controls of the conservative bounce projection, filled from the deck in
 // UserProblem when the projection is selected. Every threshold the solver
 // applies is a member, so a failure line can be read against exactly the values
@@ -1420,6 +1425,154 @@ static void ConservativeM1Projection(MeshBlockPack *pmbp) {
   }
 }
 
+//! Set isotropic fluid-frame equilibrium at fixed matter state, then boost and
+//! densitize the four radiation groups. This is a nonconservative reset: neither
+//! matter primitives nor matter U is changed to compensate for the radiation.
+//! Rejected cells retain all old moments; publication is atomic at cell scope.
+template <class EOSPolicy, class ErrorPolicy>
+static bool DirectM1EquilibriumImpl(MeshBlockPack *pmbp) {
+  if (pmbp->pradm1 == nullptr) return false;
+  auto *pdyngr =
+      dynamic_cast<dyngr::DynGRMHDPS<EOSPolicy, ErrorPolicy> *>(pmbp->pdyngr);
+  if (pdyngr == nullptr) return false;
+  auto &ps_ = pdyngr->eos.ps;
+  auto &eos = ps_.GetEOSMutable();
+  const auto code_units = eos.GetCodeUnitSystem();
+  const auto eos_units = eos.GetEOSUnitSystem();
+  const auto ngs_units = Primitive::MakeNGS();
+  const Real mb = eos.GetBaryonMass();
+  const Real rho_min = eql_rho_min_cgs /
+      code_units.MassDensityConversion(Primitive::MakeCGS());
+  const Real t_gate = eql_t_min_mev;
+  // rho/GetBaryonMass() is already in EOS number-density units. Temperature
+  // primitives use code units, so only the table's temperature bounds convert.
+  const Real nb_min = eos.GetMinimumDensity(), nb_max = eos.GetMaximumDensity();
+  const Real t_min = eos.GetMinimumTemperature()*eos_units.TemperatureConversion(code_units);
+  const Real t_max = eos.GetMaximumTemperature()*eos_units.TemperatureConversion(code_units);
+  const Real y_min = eos.GetMinimumSpeciesFraction(0), y_max = eos.GetMaximumSpeciesFraction(0);
+  auto &w0 = pmbp->pmhd->w0;
+  auto &temperature = pdyngr->temperature;
+  auto &u0 = pmbp->pradm1->u0;
+  auto &adm = pmbp->padm->adm;
+  auto &excision = pmbp->pcoord->excision_floor;
+  const bool excise = pmbp->pcoord->coord_data.bh_excise;
+  const int nvars = pmbp->pradm1->nvars;
+  const int nmhd = pmbp->pmhd->nmhd;
+  const auto opacity_type = pmbp->pradm1->params.opacity_type;
+  const auto &indcs = pmbp->pmesh->mb_indcs;
+  const int is = indcs.is, js = indcs.js, ks = indcs.ks;
+  const int nx1 = indcs.nx1, nji = indcs.nx1*indcs.nx2;
+  const int nkji = nji*indcs.nx3;
+  const int rank = global_variable::my_rank, gid_start = pmbp->gids;
+  int failures = 0;
+  Kokkos::parallel_reduce("ccsn_direct_m1_equilibrium",
+      Kokkos::RangePolicy<>(DevExeSpace(), 0, pmbp->nmb_thispack*nkji),
+      KOKKOS_LAMBDA(const int idx, int &local_failures) {
+    const int m = idx/nkji;
+    const int rem = idx%nkji;
+    const int k = rem/nji + ks, j = (rem%nji)/nx1 + js, i = rem%nx1 + is;
+    if (excise && excision(m, k, j, i)) return;
+    const Real rho = w0(m, IDN, k, j, i);
+    const Real temp = temperature(m, 0, k, j, i);
+    if (rho < rho_min || temp < t_gate) return;
+    Real prim[NPRIM] = {};
+    prim[PRH] = rho/mb;
+    prim[PVX] = w0(m, IVX, k, j, i);
+    prim[PVY] = w0(m, IVY, k, j, i);
+    prim[PVZ] = w0(m, IVZ, k, j, i);
+    prim[PPR] = w0(m, IPR, k, j, i);
+    prim[PTM] = temp;
+    prim[PYF] = w0(m, nmhd, k, j, i);
+    Real g3d[NSPMETRIC];
+    g3d[S11] = adm.g_dd(m, 0, 0, k, j, i);
+    g3d[S12] = adm.g_dd(m, 0, 1, k, j, i);
+    g3d[S13] = adm.g_dd(m, 0, 2, k, j, i);
+    g3d[S22] = adm.g_dd(m, 1, 1, k, j, i);
+    g3d[S23] = adm.g_dd(m, 1, 2, k, j, i);
+    g3d[S33] = adm.g_dd(m, 2, 2, k, j, i);
+    const Real detg = Primitive::GetDeterminant(g3d);
+    // Sylvester's criterion: all leading principal minors must be positive.
+    // A positive determinant alone also accepts two negative eigenvalues.
+    const Real minor2 = g3d[S11]*g3d[S22] - g3d[S12]*g3d[S12];
+    Real target[ccsn::projection_nspecies][ccsn::projection_nvars];
+    // Reject nonfinite or off-table thermodynamics before any EOS evaluation.
+    bool valid = prim[PRH] >= nb_min && prim[PRH] <= nb_max &&
+                 temp >= t_min && temp <= t_max &&
+                 prim[PYF] >= y_min && prim[PYF] <= y_max &&
+                 Kokkos::isfinite(detg) && detg > 0.0 &&
+                 g3d[S11] > 0.0 && Kokkos::isfinite(minor2) && minor2 > 0.0;
+    for (int a = 0; a < NSPMETRIC; ++a) valid = valid && Kokkos::isfinite(g3d[a]);
+    if (valid) {
+      valid = ccsn::EquilibriumM1Target(ps_, opacity_type, code_units, eos_units,
+                                      ngs_units, prim, g3d, target);
+    }
+    if (valid) {
+      const Real sdetg = Kokkos::sqrt(detg);
+      for (int s = 0; s < ccsn::projection_nspecies; ++s) {
+        for (int v = 0; v < ccsn::projection_nvars; ++v) {
+          target[s][v] *= sdetg;
+          valid = valid && Kokkos::isfinite(target[s][v]);
+        }
+      }
+    }
+    if (!valid) {
+      Kokkos::printf("CCSN direct M1 equilibrium FAIL rank=%d gid=%d cell=(%d,%d,%d)"
+                     " nb=% .17e T=% .17e Ye=% .17e detg=% .17e\n",
+                     rank, gid_start + m, k, j, i, prim[PRH], temp, prim[PYF], detg);
+      ++local_failures;
+      return;
+    }
+    // All components are valid before the first write. No matter state is touched.
+    for (int s = 0; s < ccsn::projection_nspecies; ++s) {
+      for (int v = 0; v < ccsn::projection_nvars; ++v) {
+        u0(m, radiationm1::CombinedIdx(s, v, nvars), k, j, i) = target[s][v];
+      }
+    }
+  }, Kokkos::Sum<int>(failures));
+  if (failures != 0) {
+    std::cerr << "### WARNING: direct M1 equilibrium left " << failures
+              << " cell(s) unchanged on rank " << global_variable::my_rank << std::endl;
+  }
+  return true;
+}
+
+static void DirectM1Equilibrium(MeshBlockPack *pmbp) {
+  using namespace Primitive;
+  if (DirectM1EquilibriumImpl<EOSCompOSE<NQTLogs>, ResetFloor>(pmbp) ||
+      DirectM1EquilibriumImpl<EOSCompOSE<NormalLogs>, ResetFloor>(pmbp)) return;
+  std::cerr << "### FATAL: direct M1 equilibrium requires CompOSE EOS and M1" << std::endl;
+#if MPI_PARALLEL_ENABLED
+  MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+#else
+  std::abort();
+#endif
+}
+
+// Both bounce and explicit startup requests use this one mode selector.
+static void InitializeM1Equilibrium(MeshBlockPack *pmbp) {
+  if (conservative_bounce_projection) {
+    ConservativeM1Projection(pmbp);
+  } else {
+    DirectM1Equilibrium(pmbp);
+  }
+}
+
+// Called once by Driver::Initialize, after final-mesh C2P/ADM and excision setup.
+// Do not change post_bounce, bounce diagnostics or the selected feedback policy.
+static void ManualM1Equilibrium(ParameterInput *pin, Mesh *pm) {
+  InitializeM1Equilibrium(pm->pmb_pack);
+  manual_equilibrium_pending = false;
+  manual_equilibrium_active = true;
+  pin->SetBoolean("problem", "equilibrium_injected", true);
+  pin->SetBoolean("problem", "inject_equilibrium", false);
+  if (global_variable::my_rank == 0) {
+    std::cout << "### CCSN: manual M1 equilibrium "
+              << (conservative_bounce_projection ? "projected conservatively." :
+                                                   "set directly; matter unchanged.")
+              << std::endl;
+  }
+}
+
 // Per-cycle bounce check, called from Deleptonization after delept work
 static void BounceCheck(Mesh *pm, ParameterInput *pin) {
   if (!detect_bounce || bounce_detected ||
@@ -1509,8 +1662,10 @@ static void BounceCheck(Mesh *pm, ParameterInput *pin) {
         m1_state = " evolved state preserved; configured fluid/geometry feedback restored.";
       } else {
         if (equilibriate_post_bounce) {
-          ConservativeM1Projection(pmbp);
-          m1_state = " conservative equilibrium projected; U refresh follows.";
+          InitializeM1Equilibrium(pmbp);
+          m1_state = conservative_bounce_projection ?
+              " conservative equilibrium projected; U refresh follows." :
+              " equilibrium set directly; matter unchanged.";
         } else {
           m1_state = " unmasked without equilibrium injection.";
         }
@@ -1705,6 +1860,11 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     prebounce_core_coupling =
         pin->GetOrAddBoolean("problem", "prebounce_core_coupling", false);
     const bool inject_equilibrium = pin->GetOrAddBoolean("problem", "inject_equilibrium", false);
+    manual_equilibrium_pending = inject_equilibrium;
+    manual_equilibrium_active = restart &&
+        pin->GetOrAddBoolean("problem", "equilibrium_injected", false);
+    pin->SetBoolean("problem", "equilibrium_injected", manual_equilibrium_active);
+    if (inject_equilibrium) pgen_init_func = &ManualM1Equilibrium;
     equilibriate_post_bounce =
         pin->GetOrAddBoolean("problem", "equilibriate_post_bounce", true);
     conservative_bounce_projection =
@@ -1736,38 +1896,63 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     projection_controls.pivot_threshold =
         pin->GetOrAddReal("problem", "projection_pivot_threshold", 1.0e-14);
     stop_at_bounce = pin->GetOrAddBoolean("problem", "stop_at_bounce", false);
-    if (inject_equilibrium ||
-        (detect_bounce && equilibriate_post_bounce && !conservative_bounce_projection)) {
-      std::cerr << "### FATAL: nonconservative M1 injection is not supported; select "
-                   "conservative_bounce_projection or disable equilibriate_post_bounce"
-                << std::endl;
-      std::exit(EXIT_FAILURE);
-    }
+    const bool manual_equilibrium = inject_equilibrium || manual_equilibrium_active;
+    const bool bounce_equilibrium = detect_bounce && equilibriate_post_bounce;
     if (recoupling_approach && (equilibriate_post_bounce ||
-        conservative_bounce_projection || pmbp->pradm1 == nullptr ||
-        !pmbp->pradm1->params.matter_sources)) {
+        (conservative_bounce_projection && !manual_equilibrium) ||
+        pmbp->pradm1 == nullptr || !pmbp->pradm1->params.matter_sources)) {
       std::cerr << "### FATAL: recoupling requires M1 matter_sources=true and "
-                   "equilibriate_post_bounce=false, conservative_bounce_projection=false"
+                   "equilibriate_post_bounce=false; conservative_bounce_projection "
+                   "is permitted only for manual equilibrium injection"
                 << std::endl;
       std::exit(EXIT_FAILURE);
     }
-    if ((delept_active || detect_bounce) &&
+    if ((delept_active || detect_bounce || manual_equilibrium) &&
         pmbp->pdyngr->eos_policy != DynGRMHD_EOS::eos_compose) {
-      std::cerr << "### FATAL: CCSN deleptonization/entropy bounce requires CompOSE"
+      std::cerr << "### FATAL: CCSN deleptonization/entropy bounce requires CompOSE; "
+                   "equilibrium initialization also requires CompOSE"
                 << std::endl;
       std::exit(EXIT_FAILURE);
+    }
+    if (bounce_equilibrium || manual_equilibrium) {
+      // Fixed evolution bypasses native C2P, leaving startup temperature and
+      // restart primitives unrecovered. Neither initialization mode can use it.
+      if (pmbp->pdyngr->IsFixedEvolution()) {
+        std::cerr << "### FATAL: M1 equilibrium initialization requires mhd/fixed=false "
+                     "for native matter and temperature recovery" << std::endl;
+        std::exit(EXIT_FAILURE);
+      }
+      auto *prad = pmbp->pradm1;
+      if (prad == nullptr ||
+          !radiationm1::equilibrium_available(prad->params.opacity_type) ||
+          prad->nspecies != radiationm1::equilibrium_nspecies ||
+          prad->nvars != M1_N_IDX + 1) {
+        std::cerr << "### FATAL: M1 equilibrium initialization requires an opacity "
+                     "backend with four-group equilibrium densities and number-evolving M1"
+                  << std::endl;
+        std::exit(EXIT_FAILURE);
+      }
+      eql_rho_min_cgs = pin->GetReal("problem", "eql_rho_min_cgs");
+      eql_t_min_mev = pin->GetReal("problem", "eql_t_min_mev");
+      if (!std::isfinite(eql_rho_min_cgs) || eql_rho_min_cgs < 0.0 ||
+          !std::isfinite(eql_t_min_mev) || eql_t_min_mev < 0.0 ||
+          !std::isfinite(rho_code_to_cgs) || rho_code_to_cgs <= 0.0) {
+        std::cerr << "### FATAL: M1 equilibrium initialization requires finite nonnegative "
+                     "eql_rho_min_cgs/eql_t_min_mev and a positive density conversion"
+                  << std::endl;
+        std::exit(EXIT_FAILURE);
+      }
     }
     if (conservative_bounce_projection) {
       const bool projection_opacity = pmbp->pradm1 != nullptr &&
           radiationm1::equilibrium_available(pmbp->pradm1->params.opacity_type);
-      if (!detect_bounce || recoupling_approach || !equilibriate_post_bounce ||
-          !projection_opacity ||
+      if (!(bounce_equilibrium || manual_equilibrium) || !projection_opacity ||
           pmbp->pradm1->nspecies != radiationm1::equilibrium_nspecies ||
           pmbp->pradm1->nvars != 5 ||
           !pmbp->pradm1->params.matter_sources || !pmbp->pradm1->params.backreact) {
-        std::cerr << "### FATAL: conservative projection requires entropy bounce, "
-                     "an opacity backend with four-group equilibrium densities, "
-                     "matter sources/backreaction and equilibrium mode"
+        std::cerr << "### FATAL: conservative projection requires bounce equilibrium or "
+                     "manual injection, an opacity backend with four-group equilibrium "
+                     "densities, and matter sources/backreaction"
                   << std::endl;
         std::exit(EXIT_FAILURE);
       }
@@ -1809,8 +1994,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       require("problem/projection_pivot_threshold",
               pc.pivot_threshold >= 0.0 && std::isfinite(pc.pivot_threshold),
               "must be non-negative and finite");
-      eql_rho_min_cgs = pin->GetReal("problem", "eql_rho_min_cgs");
-      eql_t_min_mev = pin->GetReal("problem", "eql_t_min_mev");
     }
     if (detect_bounce) {
       bounce_method_str = pin->GetOrAddString("problem", "bounce_detection_method", "entropy");
@@ -1838,11 +2021,10 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       };
       reject(!recoupling_approach, "problem/recoupling_approach=true");
       reject(!detect_bounce, "problem/detect_bounce=true");
-      reject(equilibriate_post_bounce || conservative_bounce_projection ||
-                 inject_equilibrium,
-             "problem/equilibriate_post_bounce=false, "
-             "problem/conservative_bounce_projection=false, "
-             "problem/inject_equilibrium=false");
+      reject(equilibriate_post_bounce ||
+                 (conservative_bounce_projection && !manual_equilibrium),
+             "problem/equilibriate_post_bounce=false and conservative_bounce_projection "
+             "only for manual equilibrium injection");
       reject(pmbp->pdyngr->IsFixedEvolution(), "mhd/fixed=false");
       reject(pmbp->pdyngr->eos_policy != DynGRMHD_EOS::eos_compose,
              "mhd/dyn_eos=compose");
@@ -2215,8 +2397,8 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   }
   } // !restart
 
-  // M1 lifecycle: either masked until conservative projection at bounce, or
-  // evolved one-way before bounce and recoupled without changing M1 state.
+  // M1 lifecycle: masked until bounce initialization, one-way recoupling, or
+  // an explicitly initialized radiation state that must survive mask refreshes.
   if (pmbp->pradm1 != nullptr) {
     if (prebounce_core_coupling) {
       // Reuse the ordinary fresh-state zeroing; a restart retains its moments.
@@ -2232,7 +2414,13 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
       pmbp->pradm1->SetCouplingEnabled(bounce_detected);
     } else {
       pmbp->pradm1->SetCouplingEnabled(true);
-      pmbp->pradm1->SetEvolutionEnabled(bounce_detected);
+      // Fresh manual requests start from the ordinary zero-radiation IC; a
+      // restart must keep its old radiation until the explicit reset runs.
+      if (!restart && manual_equilibrium_pending) {
+        pmbp->pradm1->SetEvolutionEnabled(false);
+      }
+      pmbp->pradm1->SetEvolutionEnabled(
+          bounce_detected || manual_equilibrium_pending || manual_equilibrium_active);
     }
   }
 

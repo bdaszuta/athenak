@@ -20,6 +20,7 @@
 #include "mesh/mesh.hpp"
 #include "coordinates/coordinates.hpp"
 #include "outputs/outputs.hpp"
+#include "pgen/pgen.hpp"
 #include "hydro/hydro.hpp"
 #include "mhd/mhd.hpp"
 #include "dyn_grmhd/dyn_grmhd.hpp"
@@ -474,6 +475,20 @@ void Driver::Initialize(Mesh *pmesh, ParameterInput *pin, Outputs *pout, bool re
       pmbp->pcoord->UpdateExcisionMasks();
     }
     (void) pmbp->pradm1->SetMask(this, 0);
+  }
+
+  // A pgen may request one explicit startup/restart state reset. At this point
+  // matter primitives, ADM and excision are current on the final startup mesh.
+  // The callback is consumed once, then the native refresh handles any changed
+  // material/radiation U before timestep selection and initial outputs.
+  if (pmesh->pgen->pgen_init_func != nullptr) {
+    auto initialize = pmesh->pgen->pgen_init_func;
+    pmesh->pgen->pgen_init_func = nullptr;
+    initialize(pin, pmesh);
+    InitBoundaryValuesAndPrimitives(pmesh, res_flag);
+    if (pmbp->pradm1 != nullptr) {
+      (void) pmbp->pradm1->FloorAndCalcClosure(this, 0);
+    }
   }
 
   //---- Step 2.  Compute time step (if problem involves time evolution)
