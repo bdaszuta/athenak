@@ -90,10 +90,45 @@ The selected ATK number mode is retained independently of the energy regime:
 `source_therm_limit` average-energy override. Equilibrium energy classification
 **does not suppress number sources**. No GRA equilibrium-number policy is added.
 
-Source increments remain measured against the **raw** predictor. The existing
-raw-predictor limiter, repair behavior, and conservative matter-coupling
-accounting are unchanged. The optional dispatcher changes neither opacity
-microphysics nor EOS, FD reconstruction, pgen, or limiter algorithms.
+Source increments remain measured against the **raw** predictor. Material
+feedback uses accepted-minus-physicalized-baseline changes, so predictor repairs
+are not charged as source exchange. The optional dispatcher changes neither
+opacity microphysics nor EOS, FD reconstruction, pgen, or limiter selection.
+
+When `theta_limiter=true` and `source_limiter=ell>0`, material budgets use signed
+net exchange, independently of `gra_source_dispatch`:
+
+```
+sum_s delta_E_s <= ell*max(tau, 0)
+delta_Q = mb*(delta_N_anue - delta_N_nue)
+-ell*D*max(Ye-Ye_min, 0) <= delta_Q <= ell*D*max(Ye_max-Ye, 0)
+```
+
+E/N are the stored densitized lab-frame moments, `D=V*W*rho`, `Q=D*Ye`, and
+`mb` is the existing EOS number-to-mass conversion. `tau` retains the material
+conserved-energy convention excluding rest mass. There is no added volume or
+comoving-number conversion in these budgets. Each species still has its own
+E/N depletion bound, `delta >= -ell*max(baseline, 0)`. One common theta scales all
+species' source E/F/N increments; existing floors and causal flux repair remain.
+
+Equal electron-species number changes do not spend composition headroom.
+Opposing species energy changes do not spend the net cooling budget. Heavy
+species contribute to energy but not to electron-lepton exchange. The signed
+number bound accounts for the two electron floor crossings locally; their
+floored difference need not be monotone in theta. Actual rounded scalar changes
+are checked before publication. If rounding invalidates a scalar bound, one
+smaller ceiling is tried with the floor-aware composition constraint recomputed
+and all scalar bounds rechecked. A still-unverified candidate falls back to the
+baseline without source feedback. No material bound is relaxed to absorb
+roundoff. Net E/Q feedback is applied once per cell from the published changes;
+momentum retains its per-species repaired-flux accounting. The source-write gate
+remains stage-2 MHD backreaction.
+
+`source_limiter=0` still suppresses the source step. A finite negative limiter
+or disabled `theta_limiter` still bypasses budget enforcement. No new parameter
+is introduced. Thermal pair attribution and regional feedback masks in composed
+branches must be retained during integration; they are not implemented by this
+branch's ordinary-source limiter.
 
 ## Reference and verification limits
 
@@ -103,6 +138,23 @@ Formula reference: GRA source tree at
 `src/m1/m1_integrators_implementation.cpp`
 (`PrepareApproximateFirstOrder_E_F_d`, lines 112–212).
 
-This implementation was checked using interpreted scalar/formula tests and
-static source comparisons only. Those checks do not establish C++ compilation,
-Kokkos execution, nonlinear convergence, or simulation-level agreement.
+The preceding number-conversion and optional-dispatch work was checked using
+interpreted scalar/formula tests and static source comparisons only. The signed
+material-budget correction and its regression sources have been source-reviewed
+but not compiled or executed; verification remains paused. Neither source
+review nor those earlier checks establish Kokkos execution, nonlinear
+convergence, or simulation-level agreement for this correction.
+
+Focused regression sources reuse `tst/test_m1_math_findings.py` for host/device
+composition-helper cases, including floor crossings. The additional
+`tst/test_m1_source_limiter.py` runner links a real `TimeUpdate` fixture and checks
+signed cancellation, true net cooling, species depletion, enable gates, and
+E/F/lepton feedback before C2P. It also checks energy cancellation with zero or
+negative tau, and nonzero safe acceptance of a decimal-valued binding budget.
+The latter runner needs freshly rebuilt double-precision Serial or CUDA objects,
+MPI/OpenMP disabled, and `Athena_ENABLE_NURATES=ON`: this branch's constructor
+requires that backend to allocate four number-evolving groups. It uses the stock
+single-zone deck and `tst/inputs/tables/SFHo_reduced.athtab`, seeds analytic
+coefficients, and never invokes the opacity producer or a simulation loop.
+The helper regressions do not require NuRATES. No build configuration, submodule
+or installation has been changed to enable the native fixture.

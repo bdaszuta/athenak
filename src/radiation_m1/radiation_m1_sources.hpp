@@ -46,6 +46,89 @@ void select_source_candidate(
   }
 }
 
+// Electron-lepton exchange charged to matter, in densitized code mass units.
+// The predictors are raw; the baselines have already received the number floor.
+// theta=0 publishes the baseline, so predictor repairs are never charged here.
+KOKKOS_INLINE_FUNCTION
+Real source_electron_change(const Real theta, const Real Npred[2],
+                            const Real Nbase[2], const Real dN[2],
+                            const Real floor, const Real mb) {
+  if (theta == 0.0) return 0.0;
+  const Real dnue = Kokkos::fmax(floor, Npred[0] + theta * dN[0]) - Nbase[0];
+  const Real danue = Kokkos::fmax(floor, Npred[1] + theta * dN[1]) - Nbase[1];
+  return mb * (danue - dnue);
+}
+
+// Limit signed electron exchange after the energy/species depletion bounds.
+// Each of the two floored number candidates has at most one crossing, giving
+// at most three affine segments. Check them from largest theta downward: their
+// difference need not be monotone. This is only the electron-composition bound;
+// it neither changes the source predictor nor repairs a radiation candidate.
+KOKKOS_INLINE_FUNCTION
+Real limit_source_ye(const Real Npred[2], const Real Nbase[2], const Real dN[2],
+                     const Real floor, const Real mb, const Real down_max,
+                     const Real up_max, const Real theta_max) {
+  if (!(Kokkos::isfinite(theta_max) && theta_max > 0.0 && theta_max <= 1.0 &&
+        Kokkos::isfinite(floor) && Kokkos::isfinite(mb) && mb > 0.0 &&
+        Kokkos::isfinite(down_max) && down_max >= 0.0 &&
+        Kokkos::isfinite(up_max) && up_max >= 0.0)) return 0.0;
+  for (int s = 0; s < 2; ++s) {
+    if (!(Kokkos::isfinite(Npred[s]) && Kokkos::isfinite(Nbase[s]) &&
+          Kokkos::isfinite(dN[s]))) return 0.0;
+  }
+  const Real full = source_electron_change(theta_max, Npred, Nbase, dN, floor, mb);
+  if (!Kokkos::isfinite(full)) return 0.0;
+  if (full >= -down_max && full <= up_max) return theta_max;
+
+  Real crossing[2] = {theta_max, theta_max};
+  for (int s = 0; s < 2; ++s) {
+    if (dN[s] != 0.0) {
+      const Real distance = floor - Npred[s];
+      if (!Kokkos::isfinite(distance)) return 0.0;
+      const Real root = distance / dN[s];
+      if (root > 0.0 && root < theta_max) crossing[s] = root;
+    }
+  }
+  const Real edges[4] = {0.0, Kokkos::fmin(crossing[0], crossing[1]),
+                        Kokkos::fmax(crossing[0], crossing[1]), theta_max};
+  for (int seg = 2; seg >= 0; --seg) {
+    Real lower = edges[seg], upper = edges[seg + 1];
+    if (upper <= lower) continue;
+    const Real middle = lower + (upper - lower) / 2.0;
+    Real offset[2], rate[2];
+    for (int s = 0; s < 2; ++s) {
+      const bool above = Npred[s] + middle * dN[s] > floor;
+      offset[s] = (above ? Npred[s] : floor) - Nbase[s];
+      rate[s] = above ? dN[s] : 0.0;
+    }
+    const Real intercept = mb * (offset[1] - offset[0]);
+    const Real slope = mb * (rate[1] - rate[0]);
+    if (!(Kokkos::isfinite(intercept) && Kokkos::isfinite(slope))) return 0.0;
+    if (slope > 0.0) {
+      lower = Kokkos::fmax(lower, (-down_max - intercept) / slope);
+      upper = Kokkos::fmin(upper, (up_max - intercept) / slope);
+    } else if (slope < 0.0) {
+      lower = Kokkos::fmax(lower, (up_max - intercept) / slope);
+      upper = Kokkos::fmin(upper, (-down_max - intercept) / slope);
+    } else if (intercept < -down_max || intercept > up_max) {
+      continue;
+    }
+    if (upper < lower || !Kokkos::isfinite(upper)) continue;
+    // Verify the actual rounded endpoint. If it lies just outside the bound,
+    // try the interval interior once, rather than add slack or search for ULPs.
+    Real change = source_electron_change(upper, Npred, Nbase, dN, floor, mb);
+    if (Kokkos::isfinite(change) && change >= -down_max && change <= up_max) {
+      return upper;
+    }
+    const Real interior = lower + (upper - lower) / 2.0;
+    change = source_electron_change(interior, Npred, Nbase, dN, floor, mb);
+    if (Kokkos::isfinite(change) && change >= -down_max && change <= up_max) {
+      return interior;
+    }
+  }
+  return 0.0;
+}
+
 //----------------------------------------------------------------------------------------
 //! \fn MathSignal radiationm1::RadiationM1::prepare_closure
 //  \brief Sets F_d, F_u, E and computes chi, P_dd in src_params

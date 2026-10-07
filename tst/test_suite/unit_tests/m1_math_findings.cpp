@@ -1,4 +1,4 @@
-// Focused host and execution-space regressions for M1 norms and closure tensors.
+// Focused host and execution-space regressions for M1 math and source limiters.
 // Build/run with tst/test_m1_math_findings.py and an existing CMake build.
 #include <cmath>
 #include <iostream>
@@ -569,6 +569,106 @@ Real PeqHeavyWeightError(const int test) {
          Kokkos::fabs(bound - bound_ref);
 }
 
+// Signed electron ledger: nu_e removes material charge, anti-nu_e adds it.
+// Binary-exact expectations are analytic endpoints, not a second interval solver.
+// This checks the actual floored publication independently of any ledger helper.
+KOKKOS_INLINE_FUNCTION
+Real SourceYeLimiterError(const int test) {
+  Real pred[2] = {8.0, 8.0}, base[2] = {8.0, 8.0}, dn[2] = {4.0, 4.0};
+  Real floor = 1.0, mb = 1.0, down = 0.0, up = 0.0, ceiling = 1.0;
+  Real expected = 1.0;
+  if (test < 4) {
+    // Equal signed increments cancel even at either zero-budget Ye endpoint.
+    if (test % 2) dn[0] = dn[1] = -4.0;
+    if (test >= 2) ceiling = expected = 1.0 / 2.0;
+  } else if (test == 4 || test == 5) {
+    // Noncancelling controls: delta_Q = +/- 4 theta, including baryon mass.
+    dn[0] = test == 4 ? 0.0 : 2.0;
+    dn[1] = test == 4 ? 2.0 : 0.0;
+    mb = 2.0;
+    down = 1.0 / 8.0;
+    up = 1.0 / 4.0;
+    expected = test == 4 ? 1.0 / 16.0 : 1.0 / 32.0;
+  } else if (test >= 6 && test <= 10) {
+    // delta_Q = 2 theta on [0,1/4], then 1 - 2 theta.
+    // Feasible intervals at budgets=1/8 are [0,1/16] and [7/16,9/16].
+    pred[0] = 0.0; pred[1] = 1.0;
+    base[0] = base[1] = 1.0;
+    dn[0] = 4.0; dn[1] = 2.0;
+    down = up = 1.0 / 8.0;
+    expected = 9.0 / 16.0;
+    if (test == 7) { ceiling = 3.0 / 10.0; expected = 1.0 / 16.0; }
+    if (test == 8) { ceiling = expected = 1.0 / 2.0; }
+    if (test == 9) { down = up = 0.0; expected = 1.0 / 2.0; }
+    if (test == 10) {
+      // Swap flavours: the same floor witness reverses the ledger sign.
+      pred[0] = 1.0; pred[1] = 0.0;
+      dn[0] = 2.0; dn[1] = 4.0;
+    }
+  } else if (test == 11 || test == 12) {
+    // Two absorption floor crossings, at 1/2 and 3/4. Cancellation before
+    // the first crossing must not hide the net change between the crossings.
+    pred[0] = base[0] = test == 11 ? 3.0 : 4.0;
+    pred[1] = base[1] = test == 11 ? 4.0 : 3.0;
+    dn[0] = dn[1] = -4.0;
+    down = test == 11 ? 1.0 / 2.0 : 0.0;
+    up = test == 12 ? 1.0 / 2.0 : 0.0;
+    expected = 5.0 / 8.0;
+  } else if (test == 13) {
+    // A constant below-floor flavour has no crossing (dN=0).
+    pred[0] = 0.0; pred[1] = 1.0;
+    base[0] = base[1] = 1.0;
+    dn[0] = 0.0; dn[1] = 2.0;
+    up = 1.0 / 8.0;
+    expected = 1.0 / 16.0;
+  } else if (test == 14) {
+    // Coincident crossings lead to a zero-slope plateau, with zero budgets.
+    pred[0] = pred[1] = 3.0;
+    base[0] = base[1] = 3.0;
+    dn[0] = dn[1] = -4.0;
+  } else if (test == 15) {
+    // Crossing exactly at theta_max: no fictitious extra interval is needed.
+    pred[0] = pred[1] = 3.0;
+    base[0] = base[1] = 3.0;
+    dn[0] = dn[1] = -4.0;
+    ceiling = expected = 1.0 / 2.0;
+  } else if (test == 16) {
+    // No positive feasible theta; zero means publish baseline without charge.
+    dn[0] = 0.0; dn[1] = 1.0;
+    expected = 0.0;
+  } else if (test == 17) {
+    ceiling = expected = 0.0;
+  } else if (test == 18) {
+    // Unequal baselines must be subtracted per species before cancellation.
+    pred[0] = base[0] = 4.0;
+    pred[1] = base[1] = 8.0;
+    dn[0] = dn[1] = -2.0;
+  } else if (test == 19) {
+    // Both predictors start below floor; plateau ends at the first crossing.
+    pred[0] = pred[1] = 0.0;
+    base[0] = base[1] = 1.0;
+    dn[0] = 2.0; dn[1] = 4.0;
+    expected = 1.0 / 4.0;
+  } else if (test == 20) {
+    // An already clipped radiation/energy ceiling is authoritative.
+    dn[0] = 0.0; dn[1] = 2.0;
+    up = 1.0;
+    ceiling = expected = 1.0 / 4.0;
+  }
+
+  const Real theta = radiationm1::limit_source_ye(
+      pred, base, dn, floor, mb, down, up, ceiling);
+  if (!Kokkos::isfinite(theta) || theta != expected || theta < 0.0 ||
+      theta > ceiling) return 1.0;
+  if (theta == 0.0) return 0.0;  // Caller publishes baseline, not raw predictor.
+  const Real raw0 = pred[0] + theta * dn[0];
+  const Real raw1 = pred[1] + theta * dn[1];
+  const Real published0 = raw0 < floor ? floor : raw0;
+  const Real published1 = raw1 < floor ? floor : raw1;
+  const Real charge = mb * ((published1 - base[1]) - (published0 - base[0]));
+  return Kokkos::isfinite(charge) && charge >= -down && charge <= up ? 0.0 : 1.0;
+}
+
 int main(int argc, char **argv) {
   Kokkos::initialize(argc, argv);
   int failed = 0;
@@ -653,6 +753,36 @@ int main(int argc, char **argv) {
                 << " execution_space=" << Kokkos::DefaultExecutionSpace::name()
                 << " value=" << mirror(n) << " expected=" << expected[n] << '\n';
       failed += !(pass_host && pass_device && exact_root);
+    }
+
+    const char *ye_names[] = {
+        "signed-emission-cancellation", "signed-absorption-cancellation",
+        "emission-cancellation-ceiling", "absorption-cancellation-ceiling",
+        "signed-upper-control", "signed-lower-control", "floor-disconnected",
+        "floor-unsafe-ceiling", "floor-safe-ceiling", "floor-singleton",
+        "floor-reversed-flavours", "two-absorption-crossings-lower",
+        "two-absorption-crossings-upper", "floor-zero-increment",
+        "floor-coincident-crossings", "floor-crossing-at-ceiling",
+        "zero-budget-rejection", "zero-ceiling", "unequal-baseline-cancellation",
+        "two-below-floor-predictors", "prior-radiation-energy-ceiling"};
+    constexpr int nye = sizeof(ye_names) / sizeof(ye_names[0]);
+    Kokkos::View<Real *> ye_device("m1_signed_ye", nye);
+    Real ye_host[nye];
+    for (int n = 0; n < nye; ++n) ye_host[n] = SourceYeLimiterError(n);
+    Kokkos::parallel_for("m1_signed_ye", Kokkos::RangePolicy<>(0, nye),
+                        KOKKOS_LAMBDA(const int n) {
+                          ye_device(n) = SourceYeLimiterError(n);
+                        });
+    const auto ye_mirror =
+        Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), ye_device);
+    for (int n = 0; n < nye; ++n) {
+      // No tolerance for exact analytic theta or signed publication budgets.
+      const bool pass = ye_host[n] == 0.0 && ye_mirror(n) == 0.0;
+      std::cout << (pass ? "PASS " : "FAIL ") << ye_names[n]
+                << " host_error=" << ye_host[n]
+                << " execution_space=" << Kokkos::DefaultExecutionSpace::name()
+                << " device_error=" << ye_mirror(n) << '\n';
+      failed += !pass;
     }
   }
   Kokkos::finalize();

@@ -769,8 +769,8 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
             }
           }
 
-          // [G] Limit the source step using conservative one-sided bounds on
-          // the increments that [H] stores after applying the E/N floors.
+          // [G] Limit signed material exchange while retaining each species'
+          // depletion bound. Budgets use the E/N increments stored after floors.
           theta = (source_step_is_finite && params_.source_limiter != 0.0)
                       ? 1.0
                       : 0.0;
@@ -784,14 +784,11 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
                     ? volform * w_lorentz * w0_(m, IDN, k, j, i)
                     : 0.;
             const Real Y_e =
-                (ismhd_ || ishydro_) ? w0_(m, IYF, k, j, i) : 0.;
+                (nspecies_ > 1 && (ismhd_ || ishydro_))
+                    ? w0_(m, IYF, k, j, i) : 0.;
 
-            Real dE_gain_full = 0.0;
-            Real dYe_up_full = 0.0;
-            Real dYe_down_full = 0.0;
-            Real dYe_up_rate = 0.0;
-            Real dYe_down_rate = 0.0;
-
+            Real dE_net_full = 0.0;
+            Real Npred_e[2]{}, Nbase_e[2]{}, dN_e[2]{};
             for (int nuidx = 0; nuidx < nspecies_; ++nuidx) {
               const Real Epred = source_pred[nuidx][M1_E_IDX];
               const Real Ebase = source_base[nuidx][M1_E_IDX];
@@ -800,11 +797,10 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
                   Kokkos::fmax(params_.rad_E_floor, Epred + dE) - Ebase;
               const Real dE_loss_full = Kokkos::fmax(-dE_full, 0.0);
               const Real dE_loss_max = limiter * Kokkos::fmax(Ebase, 0.0);
-
               if (dE_loss_full > dE_loss_max) {
                 theta = Kokkos::fmin(theta, dE_loss_max / (-dE));
               }
-              dE_gain_full += Kokkos::fmax(dE_full, 0.0);
+              dE_net_full += dE_full;
 
               if (nspecies_ > 1) {
                 const Real Npred = source_pred[nuidx][M1_N_IDX];
@@ -812,64 +808,87 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
                 const Real dN = DrEFN[nuidx][M1_N_IDX];
                 const Real dN_full =
                     Kokkos::fmax(params_.rad_N_floor, Npred + dN) - Nbase;
-                const Real dN_loss_full = Kokkos::fmax(-dN_full, 0.0);
-                const Real dN_gain_full = Kokkos::fmax(dN_full, 0.0);
-                const Real dN_loss_max =
-                    limiter * Kokkos::fmax(Nbase, 0.0);
-
-                if (dN_loss_full > dN_loss_max) {
+                const Real dN_loss_max = limiter * Kokkos::fmax(Nbase, 0.0);
+                if (-dN_full > dN_loss_max) {
                   theta = Kokkos::fmin(theta, dN_loss_max / (-dN));
                 }
-
-                const Real dN_loss_rate =
-                    (Npred > params_.rad_N_floor && dN < 0.0) ? -dN : 0.0;
-                if (nuidx == 0) {
-                  dYe_up_full += mb * dN_loss_full;
-                  dYe_up_rate += mb * dN_loss_rate;
-                  dYe_down_full += mb * dN_gain_full;
-                  dYe_down_rate += mb * dN_gain_full;
-                } else if (nuidx == 1) {
-                  dYe_up_full += mb * dN_gain_full;
-                  dYe_up_rate += mb * dN_gain_full;
-                  dYe_down_full += mb * dN_loss_full;
-                  dYe_down_rate += mb * dN_loss_rate;
+                if (nuidx < 2) {
+                  Npred_e[nuidx] = Npred;
+                  Nbase_e[nuidx] = Nbase;
+                  dN_e[nuidx] = dN;
                 }
               }
             }
 
-            const Real dE_gain_max = limiter * Kokkos::fmax(tau, 0.0);
-            if (dE_gain_full > dE_gain_max) {
-              theta = Kokkos::fmin(theta, dE_gain_max / dE_gain_full);
+            const Real dE_net_max = limiter * Kokkos::fmax(tau, 0.0);
+            if (!(Kokkos::isfinite(tau) && Kokkos::isfinite(dE_net_full) &&
+                  Kokkos::isfinite(dE_net_max))) {
+              theta = 0.0;
+            } else if (dE_net_full > dE_net_max) {
+              // Each floored energy is convex in theta and its baseline is its
+              // theta=0 value. Thus this ratio also bounds net cooling between
+              // floor crossings; net heating does not spend the cooling budget.
+              theta = Kokkos::fmin(theta, dE_net_max / dE_net_full);
             }
+            theta = Kokkos::fmax(0.0, Kokkos::fmin(1.0, theta));
 
+            Real dQ_up_max = 0.0, dQ_down_max = 0.0;
             if (nspecies_ > 1) {
-              if (!(Kokkos::isfinite(cons_dens) && cons_dens > 0.0)) {
+              if (!(Kokkos::isfinite(cons_dens) && cons_dens > 0.0 &&
+                    Kokkos::isfinite(Y_e))) {
                 theta = 0.0;
               } else {
-                dYe_up_full /= cons_dens;
-                dYe_down_full /= cons_dens;
-                dYe_up_rate /= cons_dens;
-                dYe_down_rate /= cons_dens;
-
-                const Real dYe_up_max =
-                    limiter *
+                dQ_up_max = limiter * cons_dens *
                     Kokkos::fmax(params_.source_Ye_max - Y_e, 0.0);
-                const Real dYe_down_max =
-                    limiter *
+                dQ_down_max = limiter * cons_dens *
                     Kokkos::fmax(Y_e - params_.source_Ye_min, 0.0);
-
-                if (dYe_up_full > dYe_up_max) {
-                  theta = Kokkos::fmin(theta, dYe_up_max / dYe_up_rate);
-                }
-                if (dYe_down_full > dYe_down_max) {
-                  theta =
-                      Kokkos::fmin(theta, dYe_down_max / dYe_down_rate);
-                }
+                theta = limit_source_ye(Npred_e, Nbase_e, dN_e,
+                    params_.rad_N_floor, mb, dQ_down_max, dQ_up_max, theta);
               }
             }
 
-            theta = Kokkos::fmax(0.0, Kokkos::fmin(1.0, theta));
-          }  //  if (params_.theta_limiter && params_.source_limiter >= 0)
+            // Verify actual rounded scalar exchanges before [H] publishes any
+            // species. If rounding invalidates a bound, try one smaller ceiling
+            // and recompute the floor-aware composition bound; smaller theta is
+            // not assumed safe. No budget slack or iterative source solve is added.
+            for (int trial = 0; trial < 2 && theta > 0.0; ++trial) {
+              Real dE_net = 0.0;
+              bool within_bounds = true;
+              for (int nuidx = 0; nuidx < nspecies_; ++nuidx) {
+                const Real dE = Kokkos::fmax(params_.rad_E_floor,
+                    source_pred[nuidx][M1_E_IDX] +
+                    theta * DrEFN[nuidx][M1_E_IDX]) - source_base[nuidx][M1_E_IDX];
+                dE_net += dE;
+                within_bounds = within_bounds && Kokkos::isfinite(dE) &&
+                    dE >= -limiter * Kokkos::fmax(source_base[nuidx][M1_E_IDX], 0.0);
+                if (nspecies_ > 1) {
+                  const Real dN = Kokkos::fmax(params_.rad_N_floor,
+                      source_pred[nuidx][M1_N_IDX] +
+                      theta * DrEFN[nuidx][M1_N_IDX]) - source_base[nuidx][M1_N_IDX];
+                  within_bounds = within_bounds && Kokkos::isfinite(dN) &&
+                      dN >= -limiter * Kokkos::fmax(source_base[nuidx][M1_N_IDX], 0.0);
+                }
+              }
+              within_bounds = within_bounds && Kokkos::isfinite(dE_net) &&
+                              dE_net <= dE_net_max;
+              if (nspecies_ > 1) {
+                const Real dQ = source_electron_change(theta, Npred_e, Nbase_e, dN_e,
+                                                      params_.rad_N_floor, mb);
+                within_bounds = within_bounds && Kokkos::isfinite(dQ) &&
+                                dQ >= -dQ_down_max && dQ <= dQ_up_max;
+              }
+              if (within_bounds) break;
+              if (trial == 1 || !Kokkos::isfinite(dE_net)) {
+                theta = 0.0;
+              } else {
+                theta /= 2.0;
+                if (nspecies_ > 1) {
+                  theta = limit_source_ye(Npred_e, Nbase_e, dN_e,
+                      params_.rad_N_floor, mb, dQ_down_max, dQ_up_max, theta);
+                }
+              }
+            }
+          }  // if (params_.theta_limiter && params_.source_limiter > 0.0)
 
           source_step_is_finite =
               source_step_is_finite && Kokkos::isfinite(theta);
@@ -907,6 +926,10 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
 
         // [H] Update fields
         const bool apply_source_step = source_step_is_finite && theta > 0.0;
+        // Sum only the two material budgets that were limited in [G]. Momentum
+        // feedback retains the existing per-species repaired-flux accounting.
+        Real dE_source = 0.0;
+        Real dN_electron[2]{};
         for (int nuidx = 0; nuidx < nspecies_; nuidx++) {
           const Real Ebase = source_base[nuidx][M1_E_IDX];
           AthenaPointTensor<Real, TensorSymm::NONE, 4, 1> Fbase_d{};
@@ -963,21 +986,25 @@ TaskStatus RadiationM1::TimeUpdate_(Driver *d, int stage) {
             u0_(m, CombinedIdx(nuidx, M1_N_IDX, nvars_), k, j, i) = Nf;
           }
 
+          dE_source += dE_actual;
+          if (nspecies_ > 1 && nuidx < 2) dN_electron[nuidx] = dN_actual;
+
           const Real dFx_actual = dF_actual_d(1);
           const Real dFy_actual = dF_actual_d(2);
           const Real dFz_actual = dF_actual_d(3);
           if (params_.backreact && stage == 2 && (ismhd_)) {
-            umhd0_(m, IEN, k, j, i) -= dE_actual;
             umhd0_(m, IM1, k, j, i) -= dFx_actual;
             umhd0_(m, IM2, k, j, i) -= dFy_actual;
             umhd0_(m, IM3, k, j, i) -= dFz_actual;
-            if (nspecies_ > 1) {
-              if (nuidx == 0) {
-                umhd0_(m, IYF, k, j, i) -= mb * dN_actual;
-              } else if (nuidx == 1) {
-                umhd0_(m, IYF, k, j, i) += mb * dN_actual;
-              }
-            }
+          }
+        }
+        if (params_.backreact && stage == 2 && ismhd_) {
+          // Apply net E/Q once, using the same order and electron signs as [G].
+          // Canceling species exchange must not round through intermediate
+          // material states before it is combined.
+          umhd0_(m, IEN, k, j, i) -= dE_source;
+          if (nspecies_ > 1) {
+            umhd0_(m, IYF, k, j, i) += mb * (dN_electron[1] - dN_electron[0]);
           }
         }
       });
