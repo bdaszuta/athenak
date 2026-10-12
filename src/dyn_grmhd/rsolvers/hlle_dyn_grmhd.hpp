@@ -25,7 +25,7 @@ template<int ivx, class EOSPolicy, class ErrorPolicy>
 KOKKOS_INLINE_FUNCTION
 void SingleStateHLLE_DYNGR(const PrimitiveSolverHydro<EOSPolicy, ErrorPolicy>& eos,
     Real prim_l[NPRIM], Real prim_r[NPRIM], Real Bu_l[NPRIM], Real Bu_r[NPRIM],
-    const int nmhd, const int nscal,
+    const int nmhd, const int nscal, const bool scalar_upwind,
     Real g3d[NSPMETRIC], Real beta_u[3], Real alpha,
     Real flux[NCONS], Real bflux[NMAG]) {
   constexpr int ibx = ivx - IVX;
@@ -54,8 +54,9 @@ void SingleStateHLLE_DYNGR(const PrimitiveSolverHydro<EOSPolicy, ErrorPolicy>& e
   Real cons_l[NCONS], cons_r[NCONS];
   Real fl[NCONS], fr[NCONS], bfl[NMAG], bfr[NMAG];
   Real bsql, bsqr;
-  SingleStateFlux<ivx>(eos, prim_l, prim_r, Bu_lund, Bu_rund, nmhd, nscal, g3d, beta_u,
-                       alpha, cons_l, cons_r, fl, fr, bfl, bfr, bsql, bsqr);
+  SingleStateFlux<ivx>(eos, prim_l, prim_r, Bu_lund, Bu_rund, nmhd, nscal,
+                       scalar_upwind, g3d, beta_u, alpha, cons_l, cons_r,
+                       fl, fr, bfl, bfr, bsql, bsqr);
 
 
   // Calculate the magnetosonic speeds for both states
@@ -84,6 +85,13 @@ void SingleStateHLLE_DYNGR(const PrimitiveSolverHydro<EOSPolicy, ErrorPolicy>& e
                 qa*(cons_r[CSZ] - cons_l[CSZ])) * qb;
   f_hll[CTA] = (lambda_r*fl[CTA] - lambda_l*fr[CTA] +
                 qa*(cons_r[CTA] - cons_l[CTA])) * qb;
+  // Use the same conservative HLL region for each D*Y.
+  if (!scalar_upwind) {
+    for (int n = 0; n < nscal; ++n) {
+      f_hll[CYD + n] = (lambda_r*fl[CYD + n] - lambda_l*fr[CYD + n]
+          + qa*(cons_r[CYD + n] - cons_l[CYD + n])) * qb;
+    }
+  }
   bf_hll[ibx] = 0.0;
   bf_hll[iby] = (lambda_r*bfl[iby] - lambda_l*bfr[iby] +
                  qa*(Bu_r[iby] - Bu_l[iby])) * qb;
@@ -110,6 +118,11 @@ void SingleStateHLLE_DYNGR(const PrimitiveSolverHydro<EOSPolicy, ErrorPolicy>& e
   flux[CSY] = vol * f_interface[CSY];
   flux[CSZ] = vol * f_interface[CSZ];
   flux[CTA] = vol * f_interface[CTA];
+  if (!scalar_upwind) {
+    for (int n = 0; n < nscal; ++n) {
+      flux[CYD + n] = vol * f_interface[CYD + n];
+    }
+  }
 
   bflux[IBY] = - vol * bf_interface[iby];
   bflux[IBZ] = vol * bf_interface[ibz];
@@ -128,7 +141,7 @@ void HLLE_DYNGR(const PrimitiveSolverHydro<EOSPolicy, ErrorPolicy>& eos,
      const DvceArray5D<Real> &wl, const DvceArray5D<Real> &wr,
      const DvceArray5D<Real> &bl, const DvceArray5D<Real> &br,
      const DvceArray4D<Real> &bx,
-     const int nhyd, const int nscal,
+     const int nhyd, const int nscal, const bool scalar_upwind,
      const adm::ADM::ADM_vars& adm,
      const DvceArray5D<Real> &flx, const DvceArray4D<Real> &ey,
      const DvceArray4D<Real> &ez) {
@@ -205,8 +218,9 @@ void HLLE_DYNGR(const PrimitiveSolverHydro<EOSPolicy, ErrorPolicy>& eos,
     Real cons_l[NCONS], cons_r[NCONS];
     Real fl[NCONS], fr[NCONS], bfl[NMAG], bfr[NMAG];
     Real bsql, bsqr;
-    SingleStateFlux<ivx>(eos, prim_l, prim_r, Bu_l, Bu_r, nhyd, nscal, g3d, beta_u, alpha,
-                         cons_l, cons_r, fl, fr, bfl, bfr, bsql, bsqr);
+    SingleStateFlux<ivx>(eos, prim_l, prim_r, Bu_l, Bu_r, nhyd, nscal,
+                         scalar_upwind, g3d, beta_u, alpha, cons_l, cons_r,
+                         fl, fr, bfl, bfr, bsql, bsqr);
 
     // Calculate the magnetosonic speeds for both states
     Real lambda_pl, lambda_pr, lambda_ml, lambda_mr;
@@ -234,6 +248,13 @@ void HLLE_DYNGR(const PrimitiveSolverHydro<EOSPolicy, ErrorPolicy>& eos,
                   qa*(cons_r[CSZ] - cons_l[CSZ])) * qb;
     f_hll[CTA] = ((lambda_r*fl[CTA] - lambda_l*fr[CTA]) +
                   qa*(cons_r[CTA] - cons_l[CTA])) * qb;
+    // Transport each D*Y with the mass solver's HLL wave speeds.
+    if (!scalar_upwind) {
+      for (int n = 0; n < nscal; ++n) {
+        f_hll[CYD + n] = (lambda_r*fl[CYD + n] - lambda_l*fr[CYD + n]
+            + qa*(cons_r[CYD + n] - cons_l[CYD + n])) * qb;
+      }
+    }
     bf_hll[ibx] = 0.0;
     bf_hll[iby] = ((lambda_r*bfl[iby] - lambda_l*bfr[iby]) +
                    qa*(Bu_r[iby] - Bu_l[iby])) * qb;
@@ -260,6 +281,11 @@ void HLLE_DYNGR(const PrimitiveSolverHydro<EOSPolicy, ErrorPolicy>& eos,
     flx(m, IVX, k, j, i) = vol * f_interface[CSX];
     flx(m, IVY, k, j, i) = vol * f_interface[CSY];
     flx(m, IVZ, k, j, i) = vol * f_interface[CSZ];
+    if (!scalar_upwind) {
+      for (int n = 0; n < nscal; ++n) {
+        flx(m, nhyd + n, k, j, i) = vol * f_interface[CYD + n];
+      }
+    }
     // The notation here is slightly misleading, as it suggests that Ey = -Fx(By) and
     // Ez = Fx(Bz), rather than Ez = -Fx(By) and Ey = Fx(Bz). However, the appropriate
     // containers for ey and ez for each direction are passed in as arguments to this

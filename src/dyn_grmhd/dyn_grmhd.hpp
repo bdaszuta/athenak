@@ -127,6 +127,7 @@ class DynGRMHD {
   bool enforce_maximum;     // enforce local maximum principle during FOFC
   Real dmp_M;               // threshold multiplier for discrete maximum principle.
   bool fixed_evolution;     // Disable mhd evolution
+  bool scalar_upwind;       // Use mass-flux donor transport for composition scalars
   bool scalar_pplimiter;    // Apply positivity preserving limiter on scalar
 };
 

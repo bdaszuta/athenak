@@ -23,7 +23,7 @@ template<int ivx, class EOSPolicy, class ErrorPolicy>
 KOKKOS_INLINE_FUNCTION
 void SingleStateFlux(const PrimitiveSolverHydro<EOSPolicy, ErrorPolicy>& eos,
     Real prim_l[NPRIM], Real prim_r[NPRIM], Real Bu_l[NPRIM], Real Bu_r[NPRIM],
-    const int nmhd, const int nscal,
+    const int nmhd, const int nscal, const bool scalar_upwind,
     Real g3d[NSPMETRIC], Real beta_u[3], Real alpha,
     Real cons_l[NCONS], Real cons_r[NCONS],
     Real flux_l[NCONS], Real flux_r[NCONS], Real bflux_l[NMAG], Real bflux_r[NMAG],
@@ -101,6 +101,18 @@ void SingleStateFlux(const PrimitiveSolverHydro<EOSPolicy, ErrorPolicy>& eos,
   flux_r[csx] += (prim_r[PPR] + 0.5*bsqr);
   flux_r[CTA] = (cons_r[CTA]*vcr - alpha*bur0*Bu_r[ibx]*iWr
           + (prim_r[PPR] + 0.5*bsqr)*prim_r[ivx]*iWr);
+
+  // Prepare conservative scalar states and physical fluxes when selected.
+  // D and D*Y are undensitized here; physical fluxes contain v^d-beta^d/alpha.
+  // The LLF/HLLE solvers apply the same lapse and sqrt(det(gamma)) as for mass.
+  if (!scalar_upwind) {
+    for (int n = 0; n < nscal; ++n) {
+      cons_l[CYD + n] = cons_l[CDN]*prim_l[PYF + n];
+      cons_r[CYD + n] = cons_r[CDN]*prim_r[PYF + n];
+      flux_l[CYD + n] = flux_l[CDN]*prim_l[PYF + n];
+      flux_r[CYD + n] = flux_r[CDN]*prim_r[PYF + n];
+    }
+  }
 
   bflux_r[ibx] = 0.0;
   bflux_r[iby] = (Bu_r[iby]*vcr -

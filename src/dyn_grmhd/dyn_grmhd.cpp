@@ -147,6 +147,10 @@ DynGRMHD::DynGRMHD(MeshBlockPack *pp, ParameterInput *pin) :
   scratch_level = pin->GetOrAddInteger("mhd", "dyn_scratch", 0);
   enforce_maximum = pin->GetOrAddBoolean("mhd", "enforce_maximum", true);
   dmp_M = pin->GetOrAddReal("mhd", "dmp_M", 1.2);
+  // <mhd>/scalar_upwind=true retains mass-flux donor transport (legacy).
+  // false selects conservative D*Y fluxes for normal transport, FOFC/excision,
+  // and the scalar PP baseline. The scalar_pplimiter switch stays independent.
+  scalar_upwind = pin->GetOrAddBoolean("mhd", "scalar_upwind", true);
   scalar_pplimiter = pin->GetOrAddBoolean("mhd", "scalar_pplimiter", true);
 
   fixed_evolution = pin->GetOrAddBoolean("mhd", "fixed", false);

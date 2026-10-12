@@ -48,16 +48,16 @@ void SolveFaceDynGR(const PrimitiveSolverHydro<EOSPolicy, ErrorPolicy>& eos,
                     const DvceArray5D<Real> &wl, const DvceArray5D<Real> &wr,
                     const DvceArray5D<Real> &bl, const DvceArray5D<Real> &br,
                     const DvceArray4D<Real> &bx,
-                    const int nhyd, const int nscal,
+                    const int nhyd, const int nscal, const bool scalar_upwind,
                     const adm::ADM::ADM_vars& adm,
                     const DvceArray5D<Real> &flx, const DvceArray4D<Real> &ey,
                     const DvceArray4D<Real> &ez) {
   if constexpr (rsolver_method_ == DynGRMHD_RSolver::llf_dyngr) {
     LLF_DYNGR<ivx>(eos, indcs, size, coord, m, k, j, i, wl, wr, bl, br, bx,
-                   nhyd, nscal, adm, flx, ey, ez);
+                   nhyd, nscal, scalar_upwind, adm, flx, ey, ez);
   } else if constexpr (rsolver_method_ == DynGRMHD_RSolver::hlle_dyngr) {
     HLLE_DYNGR<ivx>(eos, indcs, size, coord, m, k, j, i, wl, wr, bl, br, bx,
-                    nhyd, nscal, adm, flx, ey, ez);
+                    nhyd, nscal, scalar_upwind, adm, flx, ey, ez);
   }
 }
 
@@ -86,6 +86,7 @@ TaskStatus DynGRMHDPS<EOSPolicy, ErrorPolicy>::CalcFluxes(Driver *pdriver, int s
   auto &dyn_eos_ = eos;                            // PrimitiveSolverHydro
   auto &adm_   = pmy_pack->padm->adm;
   bool use_fofc = pmy_pack->pmhd->use_fofc;
+  const bool scalar_upwind_ = scalar_upwind;
 
   auto wl_ = pmy_pack->pmhd->wl3d;
   auto wr_ = pmy_pack->pmhd->wr3d;
@@ -131,12 +132,12 @@ TaskStatus DynGRMHDPS<EOSPolicy, ErrorPolicy>::CalcFluxes(Driver *pdriver, int s
         auto bx = bx_;  auto flx = flx1;  auto eyl = e31;  auto ezl = e21;
         const int nh = nhyd, ns = nvars - nhyd;
         SolveFaceDynGR<rsolver_method_, IVX>(dyn_eos, indcs, size, coord, m, k, j, i,
-                                             wl, wr, bl, br, bx, nh, ns, adm,
+                                             wl, wr, bl, br, bx, nh, ns, scalar_upwind_, adm,
                                              flx, eyl, ezl);
       });
 
-    // Scalar fluxes (upwind from sign of mass flux)
-    if (nvars > nhyd) {
+    // Optional mass-flux donor transport of reconstructed scalar fractions.
+    if (scalar_upwind_ && nvars > nhyd) {
       par_for("dyngrflux_x1_scalars", DevExeSpace(),
         0, nmb1, kl, ku, jl, ju, il, iu,
         KOKKOS_LAMBDA(int m, int k, int j, int i) {
@@ -183,11 +184,11 @@ TaskStatus DynGRMHDPS<EOSPolicy, ErrorPolicy>::CalcFluxes(Driver *pdriver, int s
         auto bx = by_;  auto flx = flx2;  auto eyl = e12;  auto ezl = e32;
         const int nh = nhyd, ns = nvars - nhyd;
         SolveFaceDynGR<rsolver_method_, IVY>(dyn_eos, indcs, size, coord, m, k, j, i,
-                                             wl, wr, bl, br, bx, nh, ns, adm,
+                                             wl, wr, bl, br, bx, nh, ns, scalar_upwind_, adm,
                                              flx, eyl, ezl);
       });
 
-    if (nvars > nhyd) {
+    if (scalar_upwind_ && nvars > nhyd) {
       par_for("dyngrflux_x2_scalars", DevExeSpace(),
         0, nmb1, kl, ku, jl, ju, is-1, ie+1,
         KOKKOS_LAMBDA(int m, int k, int j, int i) {
@@ -232,11 +233,11 @@ TaskStatus DynGRMHDPS<EOSPolicy, ErrorPolicy>::CalcFluxes(Driver *pdriver, int s
         auto bx = bz_;  auto flx = flx3;  auto eyl = e23;  auto ezl = e13;
         const int nh = nhyd, ns = nvars - nhyd;
         SolveFaceDynGR<rsolver_method_, IVZ>(dyn_eos, indcs, size, coord, m, k, j, i,
-                                             wl, wr, bl, br, bx, nh, ns, adm,
+                                             wl, wr, bl, br, bx, nh, ns, scalar_upwind_, adm,
                                              flx, eyl, ezl);
       });
 
-    if (nvars > nhyd) {
+    if (scalar_upwind_ && nvars > nhyd) {
       par_for("dyngrflux_x3_scalars", DevExeSpace(),
         0, nmb1, kl, ku, js-1, je+1, is-1, ie+1,
         KOKKOS_LAMBDA(int m, int k, int j, int i) {
