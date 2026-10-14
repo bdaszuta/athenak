@@ -36,7 +36,10 @@ RadiationM1::RadiationM1(MeshBlockPack *ppack, ParameterInput *pin)
       scat_1("scat_1", 1, 1, 1, 1, 1),
       chi("chi", 1, 1, 1, 1, 1),
       xi("xi", 1, 1, 1, 1, 1),
-      uflx("rad_uflx", 1, 1, 1, 1, 1) {
+      uflx("rad_uflx", 1, 1, 1, 1, 1),
+      ynu("rad_ynu", 1, 1, 1, 1, 1),
+      ynu_l("rad_ynu_l", 1, 1, 1, 1, 1),
+      ynu_r("rad_ynu_r", 1, 1, 1, 1, 1) {
   // set up parameters and flags
   ishydro = pin->DoesBlockExist("hydro");
   isunits = pin->DoesBlockExist("units");
@@ -54,6 +57,32 @@ RadiationM1::RadiationM1(MeshBlockPack *ppack, ParameterInput *pin)
   params.matter_sources = pin->GetOrAddBoolean("radiation_m1", "matter_sources", true);
   params.backreact = pin->GetOrAddBoolean("radiation_m1", "backreact", true);
   params.backreact_tmunu = pin->GetOrAddBoolean("radiation_m1", "backreact_tmunu", true);
+  // number_advection: m1 (M1's own alpha n u^i) or hydro (the hydro's rest-mass flux
+  // times n/rho, so that neutrinos moving with the matter are carried exactly like its
+  // Ye)
+  {
+    std::string na = pin->GetOrAddString("radiation_m1", "number_advection", "m1");
+    if (na != "m1" && na != "hydro") {
+      std::cerr << "Error: radiation_m1/number_advection must be m1 or hydro"
+                << std::endl;
+      exit(EXIT_FAILURE);
+    }
+    params.number_advection_hydro = (na == "hydro");
+    if (params.number_advection_hydro) {
+      // the step-averaged mass flux (MHD::RKUpdate) needs u1 = u^n: SSP RK1-3 only
+      std::string integ = pin->GetOrAddString("time", "integrator", "rk2");
+      if (integ != "rk1" && integ != "rk2" && integ != "rk3") {
+        std::cerr << "Error: radiation_m1/number_advection = hydro needs time/integrator "
+                  << "rk1, rk2 or rk3" << std::endl;
+        exit(EXIT_FAILURE);
+      }
+      if (!pin->DoesBlockExist("mhd")) {
+        std::cerr << "Error: radiation_m1/number_advection = hydro needs <mhd>"
+                  << std::endl;
+        exit(EXIT_FAILURE);
+      }
+    }
+  }
   params.theta_limiter = pin->GetOrAddBoolean("radiation_m1", "theta_limiter", false);
   params.closure_epsilon = pin->GetOrAddReal("radiation_m1", "closure_epsilon", 1e-5);
   params.closure_maxiter = pin->GetOrAddInteger("radiation_m1", "closure_maxiter", 64);
@@ -344,6 +373,11 @@ RadiationM1::RadiationM1(MeshBlockPack *ppack, ParameterInput *pin)
   Kokkos::realloc(uflx.x1f, nmb, nvarstot, ncells3, ncells2, ncells1+1);
   Kokkos::realloc(uflx.x2f, nmb, nvarstot, ncells3, ncells2+1, ncells1);
   Kokkos::realloc(uflx.x3f, nmb, nvarstot, ncells3+1, ncells2, ncells1);
+  if (params.number_advection_hydro && nspecies > 1) {
+    Kokkos::realloc(ynu, nmb, nspecies, ncells3, ncells2, ncells1);
+    Kokkos::realloc(ynu_l, nmb, nspecies, ncells3, ncells2, ncells1);
+    Kokkos::realloc(ynu_r, nmb, nspecies, ncells3, ncells2, ncells1);
+  }
 
   // allocate Eddington factor and closure flux factor (same ghost extents)
   Kokkos::realloc(chi, nmb, nspecies, ncells3, ncells2, ncells1);

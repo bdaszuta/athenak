@@ -80,6 +80,35 @@ TaskStatus MHD::RKUpdate(Driver *pdriver, int stage) {
       u0_(m,n,k,j,i) = gam0*u0_(m,n,k,j,i) + gam1*u1_(m,n,k,j,i) - beta_dt*divf(i);
     });
   });
+
+  // Accumulate the rest-mass flux with the same weights as the update above: with
+  // u1 = u^n (SSP RK1-3), F_acc <- gam0*F_acc + beta*F gives u^{n+1} = u^n - dt
+  // div(F_acc), i.e. F_acc is exactly the flux that moved the mass over the step (RK3:
+  // 1/6, 1/6, 2/3).
+  if (accumulate_mass_flux) {
+    const Real bet = pdriver->beta[stage-1];
+    const Real g0 = gam0;
+    const bool first = (stage == 1);
+    auto acc1 = mflx_acc.x1f;
+    auto acc2 = mflx_acc.x2f;
+    auto acc3 = mflx_acc.x3f;
+    par_for("mhd_mflx_acc_x1", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie+1,
+    KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+      acc1(m,k,j,i) = (first ? 0.0 : g0*acc1(m,k,j,i)) + bet*flx1(m,IDN,k,j,i);
+    });
+    if (multi_d) {
+      par_for("mhd_mflx_acc_x2", DevExeSpace(), 0, nmb1, ks, ke, js, je+1, is, ie,
+      KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+        acc2(m,k,j,i) = (first ? 0.0 : g0*acc2(m,k,j,i)) + bet*flx2(m,IDN,k,j,i);
+      });
+    }
+    if (three_d) {
+      par_for("mhd_mflx_acc_x3", DevExeSpace(), 0, nmb1, ks, ke+1, js, je, is, ie,
+      KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+        acc3(m,k,j,i) = (first ? 0.0 : g0*acc3(m,k,j,i)) + bet*flx3(m,IDN,k,j,i);
+      });
+    }
+  }
   return TaskStatus::complete;
 }
 } // namespace mhd

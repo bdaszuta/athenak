@@ -82,6 +82,10 @@ struct RadiationM1Params {
   bool beam_sources;    // include beam sources
   bool backreact;
   bool backreact_tmunu;
+  // number_advection = hydro: the part of the number flux that moves with the fluid,
+  // alpha sqrt(gamma) n u^i = (n/rho) F_D, is carried by the hydro's own rest-mass flux
+  // F_D (reconstructed like the hydro's scalars); false (m1) = M1's own alpha n u^i
+  bool number_advection_hydro;
   
   Real closure_epsilon;      // precision with which to find closure
   int closure_maxiter;       // maximum number of iterations in closure root finder

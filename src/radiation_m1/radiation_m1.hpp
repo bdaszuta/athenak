@@ -86,6 +86,8 @@ class RadiationM1 {
   DvceArray4D<bool> radiation_mask;  // radiation mask
   DvceArray5D<Real> u1;              // evolved variables at intermediate step
   DvceFaceFld5D<Real> uflx;          // fluxes of evo. quantities on cell faces
+  DvceArray5D<Real> ynu;             // number_advection = hydro: n/rho per species
+  DvceArray5D<Real> ynu_l, ynu_r;    // ... and its reconstructed L/R states on faces
   DvceArray5D<Real> eta_0;           // number emissivity coefficient
   DvceArray5D<Real> abs_0;           // number absorptivity coefficient
   DvceArray5D<Real> eta_1;           // energy emissivity coefficient

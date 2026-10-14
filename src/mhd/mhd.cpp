@@ -46,6 +46,7 @@ MHD::MHD(MeshBlockPack *ppack, ParameterInput *pin) :
     b_sts2("b_sts2",1,1,1,1),
     b_sts_rhs("b_sts_rhs",1,1,1,1),
     uflx("uflx",1,1,1,1,1),
+    mflx_acc("mflx_acc",1,1,1,1),
     efld("efld",1,1,1,1),
     e3x1("e3x1",1,1,1,1),
     e2x1("e2x1",1,1,1,1),
@@ -405,6 +406,14 @@ MHD::MHD(MeshBlockPack *ppack, ParameterInput *pin) :
       Kokkos::realloc(uflx.x1f, nmb, (nmhd+nscalars), ncells3, ncells2, ncells1+1);
       Kokkos::realloc(uflx.x2f, nmb, (nmhd+nscalars), ncells3, ncells2+1, ncells1);
       Kokkos::realloc(uflx.x3f, nmb, (nmhd+nscalars), ncells3+1, ncells2, ncells1);
+      // step-averaged rest-mass flux for radiation_m1/number_advection = hydro (mhd.hpp)
+      accumulate_mass_flux = pin->DoesBlockExist("radiation_m1") &&
+          (pin->GetOrAddString("radiation_m1", "number_advection", "m1") == "hydro");
+      if (accumulate_mass_flux) {
+        Kokkos::realloc(mflx_acc.x1f, nmb, ncells3, ncells2, ncells1+1);
+        Kokkos::realloc(mflx_acc.x2f, nmb, ncells3, ncells2+1, ncells1);
+        Kokkos::realloc(mflx_acc.x3f, nmb, ncells3+1, ncells2, ncells1);
+      }
       Kokkos::realloc(efld.x1e, nmb, ncells3+1, ncells2+1, ncells1);
       Kokkos::realloc(efld.x2e, nmb, ncells3+1, ncells2, ncells1+1);
       Kokkos::realloc(efld.x3e, nmb, ncells3, ncells2+1, ncells1+1);

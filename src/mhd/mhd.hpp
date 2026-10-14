@@ -145,6 +145,12 @@ class MHD {
   DvceFaceFld4D<Real> b_sts2;  // second previous STS stage fields
   DvceFaceFld4D<Real> b_sts_rhs;  // cached first-stage RKL2 operator contribution
   DvceFaceFld5D<Real> uflx;   // fluxes of conserved quantities on cell faces
+  // rest-mass flux averaged over the RK stages with their weights (u^{n+1} = u^n - dt
+  // times its divergence), kept when radiation_m1/number_advection = hydro: M1 carries
+  // the neutrinos that move with the matter by this same flux
+  // (RadiationM1::CalculateFluxes)
+  bool accumulate_mass_flux = false;
+  DvceFaceFld4D<Real> mflx_acc;
   DvceEdgeFld4D<Real> efld;   // edge-centered electric fields (fluxes of B)
   // temporary variables used to store face-centered electric fields returned by RS
   DvceArray4D<Real> e3x1, e2x1;
