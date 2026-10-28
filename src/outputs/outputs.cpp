@@ -203,9 +203,17 @@ Outputs::Outputs(ParameterInput *pin, Mesh *pm) {
         }
       }
 
-      // set optional boolean to output only user-defined history variables
+      // set optional history groups
       if (opar.file_type.compare("hst") == 0) {
         opar.user_hist_only =pin->GetOrAddBoolean(opar.block_name,"user_hist_only",false);
+        opar.quadrupole = pin->GetOrAddBoolean(opar.block_name, "quadrupole", false);
+        if (opar.quadrupole && opar.user_hist_only) {
+          std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                    << std::endl << "Quadrupole history cannot be combined with "
+                    << "user_hist_only in output block '" << opar.block_name << "'."
+                    << std::endl;
+          std::exit(EXIT_FAILURE);
+        }
         if (opar.user_hist_only && !(pm->pgen->user_hist)) {
           std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
               << std::endl << "User-history file requested in output block '"

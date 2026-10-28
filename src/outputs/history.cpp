@@ -22,6 +22,8 @@
 #include "mhd/mhd.hpp"
 #include "z4c/z4c.hpp"
 #include "coordinates/adm.hpp"
+#include "coordinates/cell_locations.hpp"
+#include "parameter_input.hpp"
 #include "outputs.hpp"
 
 //----------------------------------------------------------------------------------------
@@ -31,6 +33,24 @@ HistoryOutput::HistoryOutput(ParameterInput *pin, Mesh *pm, OutputParameters op)
   BaseTypeOutput(pin, pm, op) {
   // cycle through physics modules and add HistoryData struct for each
   hist_data.clear();
+
+  if (op.quadrupole) {
+    auto *pack = pm->pmb_pack;
+    if (!pm->three_d || pack->pmhd == nullptr || pack->pdyngr == nullptr ||
+        pack->padm == nullptr) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "Quadrupole history requires 3D DynGRMHD with ADM."
+                << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    // Fixed-fluid C2P is skipped, so restart primitives cannot be assumed current.
+    if (pin->GetOrAddBoolean("mhd", "fixed", false)) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "Quadrupole history does not support mhd/fixed=true."
+                << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+  }
 
   if (pm->pgen->user_hist && op.user_hist_only) {
     hist_data.emplace_back(PhysicsModule::UserDefined);
@@ -49,6 +69,9 @@ HistoryOutput::HistoryOutput(ParameterInput *pin, Mesh *pm, OutputParameters op)
   if (pm->pmb_pack->pz4c != nullptr) {
     hist_data.emplace_back(PhysicsModule::SpaceTimeDynamics);
   }
+  if (op.quadrupole) {
+    hist_data.emplace_back(PhysicsModule::Quadrupole);
+  }
 }
 
 //----------------------------------------------------------------------------------------
@@ -64,6 +87,8 @@ void HistoryOutput::LoadOutputData(Mesh *pm) {
       LoadMHDHistoryData(&data, pm);
     } else if (data.physics == PhysicsModule::SpaceTimeDynamics) {
       LoadZ4cHistoryData(&data, pm);
+    } else if (data.physics == PhysicsModule::Quadrupole) {
+      LoadQuadrupoleHistoryData(&data, pm);
     } else if (data.physics == PhysicsModule::UserDefined) {
       (pm->pgen->user_hist_func)(&data, pm);
     }
@@ -376,6 +401,79 @@ void HistoryOutput::LoadMHDHistoryData(HistoryData *pdata, Mesh *pm) {
 }
 
 //----------------------------------------------------------------------------------------
+//! Compute the six source-compatible quadrupole moments on active leaf cells.
+//! Values have code units mass*length*velocity. No waveform conversion is applied.
+//! Return rank-local sums; WriteOutputFile owns the only MPI reduction.
+void HistoryOutput::LoadQuadrupoleHistoryData(HistoryData *pdata, Mesh *pm) {
+  pdata->nhist = 6;
+  const char *labels[6] = {"dot_Ixx", "dot_Ixy", "dot_Ixz",
+                           "dot_Iyy", "dot_Iyz", "dot_Izz"};
+  for (int n = 0; n < 6; ++n) {
+    pdata->label[n] = labels[n];
+  }
+
+  // Shallow handles are reacquired on each load, including after regridding.
+  const auto u0 = pm->pmb_pack->pmhd->u0;
+  const auto w0 = pm->pmb_pack->pmhd->w0;
+  const auto gdd = pm->pmb_pack->padm->adm.g_dd;
+  const auto size = pm->pmb_pack->pmb->mb_size.d_view;
+  const auto &indcs = pm->mb_indcs;
+  const int is = indcs.is, js = indcs.js, ks = indcs.ks;
+  const int nx1 = indcs.nx1, nx2 = indcs.nx2, nx3 = indcs.nx3;
+  const int nji = nx2*nx1;
+  const int nkji = nx3*nji;
+  const int nmkji = pm->pmb_pack->nmb_thispack*nkji;
+
+  array_sum::GlobalSum total;
+  Kokkos::parallel_reduce("QuadrupoleHistory",
+      Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+      KOKKOS_LAMBDA(const int &idx, array_sum::GlobalSum &sum) {
+    const int m = idx/nkji;
+    const int k0 = (idx - m*nkji)/nji;
+    const int j0 = (idx - m*nkji - k0*nji)/nx1;
+    const int i0 = idx - m*nkji - k0*nji - j0*nx1;
+    const int i = i0 + is, j = j0 + js, k = k0 + ks;
+    const auto &block = size(m);
+    const Real x = CellCenterX(i0, nx1, block.x1min, block.x1max);
+    const Real y = CellCenterX(j0, nx2, block.x2min, block.x2max);
+    const Real z = CellCenterX(k0, nx3, block.x3min, block.x3max);
+    const Real qx = w0(m,IVX,k,j,i);
+    const Real qy = w0(m,IVY,k,j,i);
+    const Real qz = w0(m,IVZ,k,j,i);
+    const Real gxx = gdd(m,0,0,k,j,i);
+    const Real gxy = gdd(m,0,1,k,j,i);
+    const Real gxz = gdd(m,0,2,k,j,i);
+    const Real gyy = gdd(m,1,1,k,j,i);
+    const Real gyz = gdd(m,1,2,k,j,i);
+    const Real gzz = gdd(m,2,2,k,j,i);
+    const Real q2 = gxx*qx*qx + gyy*qy*qy + gzz*qz*qz
+                   + 2.0*(gxy*qx*qy + gxz*qx*qz + gyz*qy*qz);
+    const Real W = Kokkos::sqrt(1.0 + q2);
+    // Eulerian contravariant velocity, not alpha*v^i-beta^i.
+    const Real vx = qx/W, vy = qy/W, vz = qz/W;
+    // The trace is Euclidean in coordinate components, as in the GRA source.
+    const Real trace_term = (2.0/3.0)*(x*vx + y*vy + z*vz);
+    const Real vol = block.dx1*block.dx2*block.dx3;
+    // u0(IDN) already includes sqrt(gamma); multiply coordinate volume once.
+    const Real mass = vol*u0(m,IDN,k,j,i);
+    array_sum::GlobalSum cell;
+    cell.the_array[0] = mass*(2.0*vx*x - trace_term);
+    cell.the_array[1] = mass*(vx*y + vy*x);
+    cell.the_array[2] = mass*(vx*z + vz*x);
+    cell.the_array[3] = mass*(2.0*vy*y - trace_term);
+    cell.the_array[4] = mass*(vy*z + vz*y);
+    cell.the_array[5] = mass*(2.0*vz*z - trace_term);
+    // Remaining entries are zero from GlobalSum's constructor. The bounds
+    // exclude ghosts, coarse storage, and unused block-allocation capacity.
+    sum += cell;
+  }, Kokkos::Sum<array_sum::GlobalSum>(total));
+  Kokkos::fence();
+  for (int n = 0; n < 6; ++n) {
+    pdata->hdata[n] = total.the_array[n];
+  }
+}
+
+//----------------------------------------------------------------------------------------
 //! \fn void HistoryOutput::WriteOutputFile()
 //  \brief Cycles through hist_data vector and writes history file for each component
 
@@ -409,6 +507,9 @@ void HistoryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
           fname.append(".z4c");
         case PhysicsModule::UserDefined:
           fname.append(".user");
+          break;
+        case PhysicsModule::Quadrupole:
+          fname.append(".quadrupole");
           break;
         default:
           break;

@@ -155,6 +155,7 @@ struct OutputParameters {
   bool slice1, slice2, slice3;
   Real slice_x1, slice_x2, slice_x3;
   bool user_hist_only;
+  bool quadrupole = false;  // Enable source-compatible DynGRMHD quadrupole history.
   std::string data_format;
   bool contains_derived=false;
   // DBF parameters for coarsened binary:
@@ -313,6 +314,7 @@ class HistoryOutput : public BaseTypeOutput {
   void LoadHydroHistoryData(HistoryData *pdata, Mesh *pm);
   void LoadMHDHistoryData(HistoryData *pdata, Mesh *pm);
   void LoadZ4cHistoryData(HistoryData *pdata, Mesh *pm);
+  void LoadQuadrupoleHistoryData(HistoryData *pdata, Mesh *pm);
   void WriteOutputFile(Mesh *pm, ParameterInput *pin) override;
 };
 
