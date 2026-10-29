@@ -110,6 +110,7 @@ add_executable(
         outputs/formatted_table.cpp
         outputs/history.cpp
         outputs/restart.cpp
+        outputs/rwz.cpp
         outputs/spherical_surface.cpp
         outputs/coarsened_binary.cpp
         outputs/track_prtcl.cpp
@@ -198,6 +199,7 @@ add_executable(
         z4c/z4c_Sbc.cpp
         z4c/z4c_calculate_weyl_scalars.cpp
         z4c/z4c_wave_extr.cpp
+        z4c/wave_extract_rwz.cpp
         z4c/z4c_amr.cpp
         z4c/cce/cce.cpp
         z4c/driftcontrol/driftcontrol.cpp

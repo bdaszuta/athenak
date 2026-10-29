@@ -52,6 +52,10 @@
 #include "mesh/mesh.hpp"
 #include "outputs.hpp"
 
+#if MPI_PARALLEL_ENABLED
+#include <mpi.h>
+#endif
+
 //----------------------------------------------------------------------------------------
 // Outputs constructor
 
@@ -60,6 +64,7 @@ Outputs::Outputs(ParameterInput *pin, Mesh *pm) {
   // and add to linked list of BaseTypeOutputs.
 
   int num_hst=0, num_rst=0, num_log=0; // count # of hst,rst,log outputs
+  int num_rwz=0;  // Count only active RWZ blocks, after the cadence gate below.
   for (auto it = pin->block.begin(); it != pin->block.end(); ++it) {
     if (it->block_name.compare(0, 6, "output") == 0) {
       OutputParameters opar;  // define temporary OutputParameters struct
@@ -92,6 +97,7 @@ Outputs::Outputs(ParameterInput *pin, Mesh *pm) {
       if (opar.file_type.compare("hst") != 0 &&
           opar.file_type.compare("rst") != 0 &&
           opar.file_type.compare("log") != 0 &&
+          opar.file_type.compare("rwz") != 0 &&
           opar.file_type.compare("trk") != 0) {
         opar.variable = pin->GetString(opar.block_name, "variable");
         opar.file_id = pin->GetOrAddString(opar.block_name,"id",opar.variable);
@@ -182,7 +188,8 @@ Outputs::Outputs(ParameterInput *pin, Mesh *pm) {
       // set output variable and optional file id (default is output variable name)
       if (opar.file_type.compare("hst") != 0 &&
           opar.file_type.compare("rst") != 0 &&
-          opar.file_type.compare("log") != 0) {
+          opar.file_type.compare("log") != 0 &&
+          opar.file_type.compare("rwz") != 0) {
         opar.variable = pin->GetString(opar.block_name, "variable");
         opar.file_id = pin->GetOrAddString(opar.block_name,"id",opar.variable);
       }
@@ -290,6 +297,30 @@ Outputs::Outputs(ParameterInput *pin, Mesh *pm) {
       } else if (opar.file_type.compare("sph") == 0) {
         pnode = new SphericalSurfaceOutput(pin,pm,opar);
         pout_list.insert(pout_list.begin(),pnode);
+      } else if (opar.file_type.compare("rwz") == 0) {
+        // A single manager serves every radius in the shared configuration block.
+        // Check before constructing a second manager or opening any output files.
+        if (++num_rwz > 1) {
+          std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                    << std::endl << "More than one active RWZ output block found in "
+                    << "input file" << std::endl;
+#if MPI_PARALLEL_ENABLED
+          MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+#endif
+          std::exit(EXIT_FAILURE);
+        }
+        try {
+          pnode = new RWZOutput(pin,pm,opar);
+          pout_list.insert(pout_list.begin(),pnode);
+        } catch (...) {
+          // Catch object/list allocation as well as constructor exceptions before
+          // any rank proceeds into a later output-construction collective.
+          std::cerr << "### FATAL ERROR constructing RWZ output" << std::endl;
+#if MPI_PARALLEL_ENABLED
+          MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+#endif
+          std::exit(EXIT_FAILURE);
+        }
       } else if (opar.file_type.compare("rst") == 0) {
       // Add restarts to the tail end of BaseTypeOutput list, so file counters for other
       // output types are up-to-date in restart file

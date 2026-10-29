@@ -86,18 +86,9 @@ struct MeshBoundaryBuffer {
 
   // function to allocate memory for buffers for variables and their fluxes
   // Must only be called after BufferIndcs above are initialized
-  void AllocateBuffers(int nmb, int nvars, bool is_z4c) {
-    // With Z4c, buffers may contain BOTH same and coarse data
-    if (is_z4c) {
-      int nmax = std::max(isame_z4c_ndat, std::max(icoar_ndat, ifine_ndat) );
-      Kokkos::realloc(vars, nmb, (nvars*nmax));
-    } else {
-      int nmax = std::max(isame_ndat, std::max(icoar_ndat, ifine_ndat) );
-      Kokkos::realloc(vars, nmb, (nvars*nmax));
-    }
-    int nmax = std::max(iflxs_ndat, iflxc_ndat);
-    Kokkos::realloc(flux, nmb, (nvars*nmax));
-  }
+  // is_z4c selects same-level coarse-append sizing, not module identity.
+  // allocate_flux=false leaves flux empty and skips its sizing checks.
+  void AllocateBuffers(int nmb, int nvars, bool is_z4c, bool allocate_flux = true);
 };
 
 //----------------------------------------------------------------------------------------
@@ -187,7 +178,8 @@ class MeshBoundaryValues {
   //functions
   virtual void InitSendIndices(MeshBoundaryBuffer &buf,int x,int y,int z,int a,int b)=0;
   virtual void InitRecvIndices(MeshBoundaryBuffer &buf,int x,int y,int z,int a,int b)=0;
-  void InitializeBuffers(const int nvar);
+  // allocate_flux controls native flux storage; variable buffers are always allocated.
+  void InitializeBuffers(const int nvar, bool allocate_flux = true);
 
   TaskStatus InitRecv(const int nvar);
   virtual TaskStatus InitFluxRecv(const int nvar)=0;

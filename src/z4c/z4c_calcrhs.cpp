@@ -19,7 +19,7 @@
 #include "mesh/mesh.hpp"
 #include "coordinates/adm.hpp"
 #include "z4c/z4c.hpp"
-#include "z4c/driftcontrol/driftcontrol.hpp"
+#include "z4c/z4c_gauge_rhs.hpp"
 #include "z4c/tmunu.hpp"
 #include "coordinates/cell_locations.hpp"
 
@@ -43,88 +43,10 @@ TaskStatus Z4c::CalcRHS(Driver *pdriver, int stage) {
 
   Real time = pmy_pack->pmesh->time;
 
-  // Drift control (optional)
+  // Current-time gauge snapshot; the controller is read, never advanced here.
   int nx1 = indcs.nx1, nx2 = indcs.nx2, nx3 = indcs.nx3;
-  bool dc_on        = opt.enable_driftcontrol;
-  int  dc_variety   = opt.dc_variety;
-  Real dc_inv_s2    = 0.0;             // 1/damping_scale^2
-  Real dc_inv_tau[3] = {0.0, 0.0, 0.0}; // relaxation rate, per axis
-  Real dc_c[3]      = {0.0, 0.0, 0.0};  // centre of the Gaussian weight
-  Real dc_corr[3]   = {0.0, 0.0, 0.0};  // oscillator/PID shift RHS increment
-  Real dc_target[3] = {0.0, 0.0, 0.0};  // relaxation target shift
-  Real dc_gsupp[3]  = {0.0, 0.0, 0.0};  // relaxation Gamma-driver suppression
-
-  if (dc_on) {
-    DriftControl *pdc = pmy_pack->pz4c->pdrift_control.get();
-    Real const fixed[3] = {opt.dc_fixed_x, opt.dc_fixed_y, opt.dc_fixed_z};
-    dc_inv_s2 = 1.0 / SQR(opt.dc_damping_scale);
-
-    for (int a = 0; a < 3; ++a) {
-      dc_c[a] = (opt.dc_gaussian_center == DriftControl::CenterTracker)
-              ? pdc->GetPos(a) : fixed[a];
-    }
-
-    if (dc_variety == DriftControl::Relaxation) {
-      for (int a = 0; a < 3; ++a) {
-        dc_inv_tau[a] = 1.0 / opt.dc_relaxation_time;
-        Real const e = pdc->GetPos(a) - fixed[a];
-        dc_target[a] = opt.dc_kappa * e;
-        if (opt.dc_gamma_suppress > 0.0) {
-          Real const sc = 1.0 / (1.0 + opt.dc_gamma_suppress
-                                    * Kokkos::fabs(e) / opt.dc_damping_scale);
-          dc_gsupp[a] = opt.shift_ggamma * (1.0 - sc);
-        }
-      }
-    } else if (dc_variety == DriftControl::PID) {
-      for (int a = 0; a < 3; ++a) {
-        Real const e = pdc->GetPos(a) - fixed[a];
-        dc_corr[a] = -(opt.dc_Kp * e + opt.dc_Ki * pdc->GetIntegral(a)
-                     + opt.dc_Kd * pdc->GetVel(a));
-      }
-    } else if (dc_variety == DriftControl::BDOB) {
-      for (int a = 0; a < 3; ++a) {
-        dc_corr[a] = -pdc->GetU(a);
-      }
-    } else if (dc_variety == DriftControl::DOB) {
-      Real const wc2  = SQR(opt.dc_omega_c);
-      Real const twzc = 2.0 * opt.dc_zeta * opt.dc_omega_c;
-      for (int a = 0; a < 3; ++a) {
-        Real const e    = pdc->GetPos(a) - fixed[a];
-        Real const v    = pdc->GetVel(a);
-        Real const fhat = pdc->GetP(a) + opt.dc_omega_o * v;
-        dc_corr[a] = -(wc2 * e + twzc * v + fhat);
-      }
-    } else {
-      Real const tau      = opt.dc_damping_time;
-      Real const zeta     = opt.dc_damping_coeff;
-      Real const inv_tau2 = 1.0 / SQR(tau);
-      for (int a = 0; a < 3; ++a) {
-        dc_corr[a] = -(2.0 * tau * zeta * pdc->GetVel(a)
-                     + (pdc->GetPos(a) - fixed[a])) * inv_tau2;
-      }
-    }
-
-    if (dc_variety != DriftControl::BDOB) {
-      // Per-axis gain on the applied correction.
-      Real const dc_gain[3] = {opt.dc_gain_x, opt.dc_gain_y, opt.dc_gain_z};
-      for (int a = 0; a < 3; ++a) {
-        dc_corr[a]    *= dc_gain[a];
-        dc_gsupp[a]   *= dc_gain[a];
-        dc_inv_tau[a] *= dc_gain[a];
-      }
-
-      // Optional ramp-down, applied to everything the controller injects. The factor is
-      // 1 unless dc_ramp_start >= 0, so this is a no-op for every existing parfile.
-      Real const dc_ramp = pdc->RampFactor(time);
-      if (dc_ramp < 1.0) {
-        for (int a = 0; a < 3; ++a) {
-          dc_corr[a]    *= dc_ramp;
-          dc_gsupp[a]   *= dc_ramp;
-          dc_inv_tau[a] *= dc_ramp;
-        }
-      }
-    }
-  }
+  const GaugeRhsContext gauge_ctx = MakeGaugeRhsContext(
+      opt, pmy_pack->pz4c->pdrift_control.get(), time);
 
   bool is_vacuum = (pmy_pack->ptmunu == nullptr) ? true : false;
   Tmunu::Tmunu_vars tmunu;
@@ -662,66 +584,31 @@ TaskStatus Z4c::CalcRHS(Driver *pdriver, int stage) {
                 (oopsi4*tmunu.S_dd(m,a,b,k,j,i) - (1./3.)*S*z4c.g_dd(m,a,b,k,j,i));
       }
     }
-    // lapse function
-    Real const f = opt.lapse_oplog * opt.lapse_harmonicf
-                 + opt.lapse_harmonic * z4c.alpha(m,k,j,i);
-    rhs.alpha(m,k,j,i) = opt.lapse_advect * Lalpha
-                       - f * z4c.alpha(m,k,j,i) * z4c.vKhat(m,k,j,i);
-
-    if (opt.slow_start_lapse) {
-      Real W2 = (z4c.chi(m,k,j,i) > opt.chi_min_floor)
-                    ? z4c.chi(m,k,j,i) : opt.chi_min_floor;
-      Real W = pow(W2, 0.5);
-      rhs.alpha(m,k,j,i) += opt.ssl_damping_amp*(W-z4c.alpha(m,k,j,i))
-                            *pow(W,opt.ssl_damping_index)*exp(-0.5*pow(time/
-                            (opt.ssl_damping_time),2));
+    // Gauge derivatives use current raw fields and the existing stencil results.
+    GaugeRhsPoint u{};
+    u.chi = z4c.chi(m,k,j,i);
+    u.chi_guarded = chi_guarded;
+    u.alpha = z4c.alpha(m,k,j,i);
+    u.khat = z4c.vKhat(m,k,j,i);
+    GaugeRhsDerivatives d{};
+    d.Lalpha = Lalpha;
+    for (int a = 0; a < 3; ++a) {
+      u.beta[a] = z4c.beta_u(m,a,k,j,i);
+      u.gam[a] = z4c.vGam_u(m,a,k,j,i);
+      d.dalpha[a] = dalpha_d(a);
+      d.dchi[a] = dchi_d(a);
+      d.Lbeta[a] = Lbeta_u(a);
     }
-
-    // shift vector
-    for(int a = 0; a < 3; ++a) {
-      rhs.beta_u(m,a,k,j,i) = opt.shift_ggamma * z4c.vGam_u(m,a,k,j,i)
-                            + opt.shift_advect * Lbeta_u(a);
-      rhs.beta_u(m,a,k,j,i) -= opt.shift_eta * z4c.beta_u(m,a,k,j,i);
-      // FORCE beta = 0
-      //rhs.beta_u(m,a,k,j,i) = 0;
+    Real x[3] = {};
+    if (gauge_ctx.dc_on) {
+      x[0] = CellCenterX(i - is, nx1, size.d_view(m).x1min, size.d_view(m).x1max);
+      x[1] = CellCenterX(j - js, nx2, size.d_view(m).x2min, size.d_view(m).x2max);
+      x[2] = CellCenterX(k - ks, nx3, size.d_view(m).x3min, size.d_view(m).x3max);
     }
-
-    // harmonic gauge terms
-    for(int a = 0; a < 3; ++a) {
-      rhs.beta_u(m,a,k,j,i) += opt.shift_alpha2ggamma *
-                          SQR(z4c.alpha(m,k,j,i)) * z4c.vGam_u(m,a,k,j,i);
-      for(int b = 0; b < 3; ++b) {
-        rhs.beta_u(m,a,k,j,i) += opt.shift_hh * z4c.alpha(m,k,j,i) *
-          chi_guarded * (0.5 * z4c.alpha(m,k,j,i) * dchi_d(b) - dalpha_d(b)) * g_uu(a,b);
-      }
-    }
-
-    // drift control correction
-    if (dc_on) {
-      Real &x1min = size.d_view(m).x1min;
-      Real &x1max = size.d_view(m).x1max;
-      Real &x2min = size.d_view(m).x2min;
-      Real &x2max = size.d_view(m).x2max;
-      Real &x3min = size.d_view(m).x3min;
-      Real &x3max = size.d_view(m).x3max;
-      Real x1 = CellCenterX(i - is, nx1, x1min, x1max);
-      Real x2 = CellCenterX(j - js, nx2, x2min, x2max);
-      Real x3 = CellCenterX(k - ks, nx3, x3min, x3max);
-
-      Real const r2 = SQR(x1 - dc_c[0]) + SQR(x2 - dc_c[1]) + SQR(x3 - dc_c[2]);
-      Real const g  = Kokkos::exp(-r2 * dc_inv_s2);
-
-      if (dc_variety == DriftControl::Relaxation) {
-        for (int a = 0; a < 3; ++a) {
-          rhs.beta_u(m,a,k,j,i) -= dc_inv_tau[a]
-                                 * (z4c.beta_u(m,a,k,j,i) - dc_target[a]) * g;
-          rhs.beta_u(m,a,k,j,i) -= dc_gsupp[a] * z4c.vGam_u(m,a,k,j,i) * g;
-        }
-      } else {
-        for (int a = 0; a < 3; ++a) {
-          rhs.beta_u(m,a,k,j,i) -= dc_corr[a] * g;
-        }
-      }
+    const GaugeRhsNoKO gauge_rhs = EvaluateGaugeRhs(u, d, g_uu, x, time, gauge_ctx);
+    rhs.alpha(m,k,j,i) = gauge_rhs.alpha;
+    for (int a = 0; a < 3; ++a) {
+      rhs.beta_u(m,a,k,j,i) = gauge_rhs.beta[a];
     }
   });
 

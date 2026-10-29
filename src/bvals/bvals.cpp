@@ -7,8 +7,11 @@
 //! \brief constructors and initializers for both particle and Mesh variable boundary
 //! classes.
 
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <utility>
 #include <algorithm> // max
 #include <map>
@@ -21,6 +24,60 @@
 #include "mesh/mesh.hpp"
 #include "particles/particles.hpp"
 #include "bvals.hpp"
+
+namespace {
+
+// A rank-local exit could leave peers blocked in boundary communication. Abort the
+// whole job directly, without requiring other ranks to enter a collective first.
+[[noreturn]] void AbortBoundary() {
+#if MPI_PARALLEL_ENABLED
+  MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+#endif
+  std::exit(EXIT_FAILURE);
+}
+
+// Native kernel indices, packed metadata, and MPI counts all use nonnegative ints.
+// Widen BEFORE arithmetic and check BEFORE narrowing or allocating any payload.
+int CheckedBoundaryCount(std::int64_t count, const char *quantity) {
+  if (count < 0 || count > std::numeric_limits<int>::max()) {
+    std::cerr << "### FATAL ERROR in boundary buffers: " << quantity << " = " << count
+              << " is outside [0, " << std::numeric_limits<int>::max() << "]"
+              << std::endl;
+    AbortBoundary();
+  }
+  return static_cast<int>(count);
+}
+
+int CheckedBoundaryProduct(int left, int right, const char *quantity) {
+  const std::int64_t lhs = CheckedBoundaryCount(left, quantity);
+  const std::int64_t rhs = CheckedBoundaryCount(right, quantity);
+  return CheckedBoundaryCount(lhs*rhs, quantity);
+}
+
+}  // namespace
+
+//----------------------------------------------------------------------------------------
+// Check all requested row lengths before either native boundary buffer is allocated.
+void MeshBoundaryBuffer::AllocateBuffers(int nmb, int nvars, bool is_z4c,
+                                         bool allocate_flux) {
+  CheckedBoundaryCount(nmb, "native boundary MeshBlock count");
+  // With coarse-append sizing, buffers contain BOTH same and coarse data.
+  const int nmax = std::max(is_z4c ? isame_z4c_ndat : isame_ndat,
+                           std::max(icoar_ndat, ifine_ndat));
+  const int var_count = CheckedBoundaryProduct(nvars, nmax, "native vars row length");
+  int flux_count = 0;
+  if (allocate_flux) {
+    flux_count = CheckedBoundaryProduct(
+        nvars, std::max(iflxs_ndat, iflxc_ndat), "native flux row length");
+  }
+  Kokkos::realloc(vars, nmb, var_count);
+  if (allocate_flux) {
+    Kokkos::realloc(flux, nmb, flux_count);
+  } else {
+    // Release any prior flux storage when only variables are requested.
+    flux = DvceArray2D<Real>();
+  }
+}
 
 //----------------------------------------------------------------------------------------
 // MeshBoundaryValues constructor:
@@ -122,21 +179,22 @@ MeshBoundaryValues::~MeshBoundaryValues() {
 #if MPI_PARALLEL_ENABLED
 int MeshBoundaryValues::GetVarDataSize(const MeshBoundaryBuffer &buf, int m, int n,
                                        int nvars) const {
-  int data_size = nvars;
+  int ndat;
   auto &nghbr = pmy_pack->pmb->nghbr;
   auto &mblev = pmy_pack->pmb->mb_lev;
   if (nghbr.h_view(m,n).lev < mblev.h_view(m)) {
-    data_size *= buf.icoar_ndat;
+    ndat = buf.icoar_ndat;
   } else if (nghbr.h_view(m,n).lev == mblev.h_view(m)) {
-    if (is_z4c_) {
-      data_size *= buf.isame_z4c_ndat;
+    // Match the coarse-data append predicate in CC pack/unpack.
+    if (is_z4c_ && pmy_pack->pmesh->multilevel) {
+      ndat = buf.isame_z4c_ndat;
     } else {
-      data_size *= buf.isame_ndat;
+      ndat = buf.isame_ndat;
     }
   } else {
-    data_size *= buf.ifine_ndat;
+    ndat = buf.ifine_ndat;
   }
-  return data_size;
+  return CheckedBoundaryProduct(nvars, ndat, "rank-packed vars entry length");
 }
 
 void MeshBoundaryValues::BuildRankPackedVarMetadata(const int nvars) {
@@ -151,6 +209,8 @@ void MeshBoundaryValues::BuildRankPackedVarMetadata(const int nvars) {
 
   int nmb = pmy_pack->nmb_thispack;
   int nnghbr = pmy_pack->pmb->nnghbr;
+  // This also bounds all entry-vector sizes and flattened (m,n) map indices.
+  const int map_len = CheckedBoundaryProduct(nmb, nnghbr, "vars offset-map length");
   auto &nghbr = pmy_pack->pmb->nghbr;
   int my_rank = global_variable::my_rank;
 
@@ -187,19 +247,28 @@ void MeshBoundaryValues::BuildRankPackedVarMetadata(const int nvars) {
   int send_hdr_total = 0;
   int send_entry_total = 0;
   for (auto &kv : send_by_rank) {
+    const int nentries = CheckedBoundaryCount(
+        static_cast<std::int64_t>(kv.second.size()), "vars send entry count");
     int msg_offset = send_total;
     int hdr_offset = send_hdr_total;
     int entry_offset = send_entry_total;
+    send_entry_total = CheckedBoundaryCount(
+        static_cast<std::int64_t>(send_entry_total) + nentries, "vars send entry total");
+    send_hdr_total = CheckedBoundaryCount(
+        static_cast<std::int64_t>(send_hdr_total) +
+        CheckedBoundaryProduct(3, nentries, "vars send header length"),
+        "vars send header total");
     for (auto &entry : kv.second) {
       entry.offset = send_total;
+      // Check the whole local aggregate, not just the payload for this peer.
+      send_total = CheckedBoundaryCount(
+          static_cast<std::int64_t>(send_total) + entry.data_size,
+          "vars send payload total");
       send_var_entries_.push_back(entry);
-      send_total += entry.data_size;
-      ++send_entry_total;
     }
-    send_hdr_total += 3*static_cast<int>(kv.second.size());
     RankPackedVarMessage msg;
     msg.rank = kv.first;
-    msg.nentries = static_cast<int>(kv.second.size());
+    msg.nentries = nentries;
     msg.entry_offset = entry_offset;
     msg.hdr_offset = hdr_offset;
     msg.offset = msg_offset;
@@ -211,19 +280,27 @@ void MeshBoundaryValues::BuildRankPackedVarMetadata(const int nvars) {
   int recv_hdr_total = 0;
   int recv_entry_total = 0;
   for (auto &kv : recv_by_rank) {
+    const int nentries = CheckedBoundaryCount(
+        static_cast<std::int64_t>(kv.second.size()), "vars recv entry count");
     int msg_offset = recv_total;
     int hdr_offset = recv_hdr_total;
     int entry_offset = recv_entry_total;
+    recv_entry_total = CheckedBoundaryCount(
+        static_cast<std::int64_t>(recv_entry_total) + nentries, "vars recv entry total");
+    recv_hdr_total = CheckedBoundaryCount(
+        static_cast<std::int64_t>(recv_hdr_total) +
+        CheckedBoundaryProduct(3, nentries, "vars recv header length"),
+        "vars recv header total");
     for (auto &entry : kv.second) {
       entry.offset = recv_total;
+      recv_total = CheckedBoundaryCount(
+          static_cast<std::int64_t>(recv_total) + entry.data_size,
+          "vars recv payload total");
       recv_var_entries_.push_back(entry);
-      recv_total += entry.data_size;
-      ++recv_entry_total;
     }
-    recv_hdr_total += 3*static_cast<int>(kv.second.size());
     RankPackedVarMessage msg;
     msg.rank = kv.first;
-    msg.nentries = static_cast<int>(kv.second.size());
+    msg.nentries = nentries;
     msg.entry_offset = entry_offset;
     msg.hdr_offset = hdr_offset;
     msg.offset = msg_offset;
@@ -258,22 +335,25 @@ void MeshBoundaryValues::BuildRankPackedVarMetadata(const int nvars) {
   // header message entirely. tag=2 avoids the payload tag=1.
   {
     const int meta_tag = 2;
-    std::vector<MPI_Request> exch_reqs(
-        send_var_msgs_.size() + recv_var_msgs_.size(), MPI_REQUEST_NULL);
+    const int nexch = CheckedBoundaryCount(
+        static_cast<std::int64_t>(send_var_msgs_.size()) +
+        static_cast<std::int64_t>(recv_var_msgs_.size()), "vars header request count");
+    std::vector<MPI_Request> exch_reqs(nexch, MPI_REQUEST_NULL);
     std::size_t r = 0;
     for (const auto &msg : recv_var_msgs_) {
-      const int hdr_size = 3*msg.nentries;
+      const int hdr_size = CheckedBoundaryProduct(
+          3, msg.nentries, "vars recv header length");
       MPI_Irecv(rank_recvhdr_vars_.data() + msg.hdr_offset, hdr_size, MPI_INT,
                 msg.rank, meta_tag, comm_vars, &exch_reqs[r++]);
     }
     for (const auto &msg : send_var_msgs_) {
-      const int hdr_size = 3*msg.nentries;
+      const int hdr_size = CheckedBoundaryProduct(
+          3, msg.nentries, "vars send header length");
       MPI_Isend(rank_sendhdr_vars_.data() + msg.hdr_offset, hdr_size, MPI_INT,
                 msg.rank, meta_tag, comm_vars, &exch_reqs[r++]);
     }
     if (!exch_reqs.empty()) {
-      MPI_Waitall(static_cast<int>(exch_reqs.size()), exch_reqs.data(),
-                  MPI_STATUSES_IGNORE);
+      MPI_Waitall(nexch, exch_reqs.data(), MPI_STATUSES_IGNORE);
     }
   }
 
@@ -283,7 +363,6 @@ void MeshBoundaryValues::BuildRankPackedVarMetadata(const int nvars) {
   {
     const int nmb_max =
         std::max(pmy_pack->nmb_thispack, pmy_pack->pmesh->nmb_maxperrank);
-    const int map_len = nmb*nnghbr;
     recv_agg_offset_ = DvceArray1D<int>("recv_agg_offset", std::max(1, map_len));
     send_agg_offset_ = DvceArray1D<int>("send_agg_offset", std::max(1, map_len));
     auto recv_off_h = Kokkos::create_mirror_view(recv_agg_offset_);
@@ -303,10 +382,18 @@ void MeshBoundaryValues::BuildRankPackedVarMetadata(const int nvars) {
                     << __LINE__ << std::endl
                     << "Invalid rank-packed recv header from peer "
                     << msg.rank << std::endl;
-          std::exit(EXIT_FAILURE);
+          AbortBoundary();
         }
         if (lid < nmb) recv_off_h(lid*nnghbr + dn) = off;
-        off += dsize;
+        off = CheckedBoundaryCount(static_cast<std::int64_t>(off) + dsize,
+                                   "decoded vars recv payload offset");
+      }
+      if ((off - msg.offset) != msg.data_size) {
+        std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                  << std::endl << "Rank-packed vars payload from peer " << msg.rank
+                  << " is " << (off - msg.offset) << " Reals but this rank sized its "
+                  << "receive for " << msg.data_size << std::endl;
+        AbortBoundary();
       }
     }
     for (const auto &entry : send_var_entries_) {
@@ -333,19 +420,31 @@ int MeshBoundaryValues::GetFluxDataSize(const MeshBoundaryBuffer &buf, int m, in
   if (is_fc) {
     // FC (EMF) corrections are exchanged with coarser AND same-level neighbours
     if (sending) {
-      if (nlev <  mlev) return nvars*buf.iflxc_ndat;
-      if (nlev == mlev) return nvars*buf.iflxs_ndat;
+      if (nlev <  mlev) {
+        return CheckedBoundaryProduct(nvars, buf.iflxc_ndat, "flux send entry length");
+      }
+      if (nlev == mlev) {
+        return CheckedBoundaryProduct(nvars, buf.iflxs_ndat, "flux send entry length");
+      }
     } else {
-      if (nlev >  mlev) return nvars*buf.iflxc_ndat;
-      if (nlev == mlev) return nvars*buf.iflxs_ndat;
+      if (nlev >  mlev) {
+        return CheckedBoundaryProduct(nvars, buf.iflxc_ndat, "flux recv entry length");
+      }
+      if (nlev == mlev) {
+        return CheckedBoundaryProduct(nvars, buf.iflxs_ndat, "flux recv entry length");
+      }
     }
     return 0;
   }
   // CC corrections travel fine -> coarse only, and always use the coarse index set
   if (sending) {
-    if (nlev < mlev) return nvars*buf.iflxc_ndat;
+    if (nlev < mlev) {
+      return CheckedBoundaryProduct(nvars, buf.iflxc_ndat, "flux send entry length");
+    }
   } else {
-    if (nlev > mlev) return nvars*buf.iflxc_ndat;
+    if (nlev > mlev) {
+      return CheckedBoundaryProduct(nvars, buf.iflxc_ndat, "flux recv entry length");
+    }
   }
   return 0;
 }
@@ -370,6 +469,7 @@ void MeshBoundaryValues::BuildRankPackedFluxMetadata(const int nvars, const bool
 
   int nmb = pmy_pack->nmb_thispack;
   int nnghbr = pmy_pack->pmb->nnghbr;
+  const int map_len = CheckedBoundaryProduct(nmb, nnghbr, "flux offset-map length");
   auto &nghbr = pmy_pack->pmb->nghbr;
   auto &mblev = pmy_pack->pmb->mb_lev;
   int my_rank = global_variable::my_rank;
@@ -419,19 +519,27 @@ void MeshBoundaryValues::BuildRankPackedFluxMetadata(const int nvars, const bool
 
   int send_total = 0, send_hdr_total = 0, send_entry_total = 0;
   for (auto &kv : send_by_rank) {
+    const int nentries = CheckedBoundaryCount(
+        static_cast<std::int64_t>(kv.second.size()), "flux send entry count");
     int msg_offset = send_total;
     int hdr_offset = send_hdr_total;
     int entry_offset = send_entry_total;
+    send_entry_total = CheckedBoundaryCount(
+        static_cast<std::int64_t>(send_entry_total) + nentries, "flux send entry total");
+    send_hdr_total = CheckedBoundaryCount(
+        static_cast<std::int64_t>(send_hdr_total) +
+        CheckedBoundaryProduct(3, nentries, "flux send header length"),
+        "flux send header total");
     for (auto &entry : kv.second) {
       entry.offset = send_total;
+      send_total = CheckedBoundaryCount(
+          static_cast<std::int64_t>(send_total) + entry.data_size,
+          "flux send payload total");
       send_flux_entries_.push_back(entry);
-      send_total += entry.data_size;
-      ++send_entry_total;
     }
-    send_hdr_total += 3*static_cast<int>(kv.second.size());
     RankPackedVarMessage msg;
     msg.rank = kv.first;
-    msg.nentries = static_cast<int>(kv.second.size());
+    msg.nentries = nentries;
     msg.entry_offset = entry_offset;
     msg.hdr_offset = hdr_offset;
     msg.offset = msg_offset;
@@ -441,19 +549,27 @@ void MeshBoundaryValues::BuildRankPackedFluxMetadata(const int nvars, const bool
 
   int recv_total = 0, recv_hdr_total = 0, recv_entry_total = 0;
   for (auto &kv : recv_by_rank) {
+    const int nentries = CheckedBoundaryCount(
+        static_cast<std::int64_t>(kv.second.size()), "flux recv entry count");
     int msg_offset = recv_total;
     int hdr_offset = recv_hdr_total;
     int entry_offset = recv_entry_total;
+    recv_entry_total = CheckedBoundaryCount(
+        static_cast<std::int64_t>(recv_entry_total) + nentries, "flux recv entry total");
+    recv_hdr_total = CheckedBoundaryCount(
+        static_cast<std::int64_t>(recv_hdr_total) +
+        CheckedBoundaryProduct(3, nentries, "flux recv header length"),
+        "flux recv header total");
     for (auto &entry : kv.second) {
       entry.offset = recv_total;
+      recv_total = CheckedBoundaryCount(
+          static_cast<std::int64_t>(recv_total) + entry.data_size,
+          "flux recv payload total");
       recv_flux_entries_.push_back(entry);
-      recv_total += entry.data_size;
-      ++recv_entry_total;
     }
-    recv_hdr_total += 3*static_cast<int>(kv.second.size());
     RankPackedVarMessage msg;
     msg.rank = kv.first;
-    msg.nentries = static_cast<int>(kv.second.size());
+    msg.nentries = nentries;
     msg.entry_offset = entry_offset;
     msg.hdr_offset = hdr_offset;
     msg.offset = msg_offset;
@@ -483,20 +599,25 @@ void MeshBoundaryValues::BuildRankPackedFluxMetadata(const int nvars, const bool
   // used below and of the vars header tag 2 on comm_vars.
   {
     const int meta_tag = 3;
-    std::vector<MPI_Request> exch_reqs(
-        send_flux_msgs_.size() + recv_flux_msgs_.size(), MPI_REQUEST_NULL);
+    const int nexch = CheckedBoundaryCount(
+        static_cast<std::int64_t>(send_flux_msgs_.size()) +
+        static_cast<std::int64_t>(recv_flux_msgs_.size()), "flux header request count");
+    std::vector<MPI_Request> exch_reqs(nexch, MPI_REQUEST_NULL);
     std::size_t r = 0;
     for (const auto &msg : recv_flux_msgs_) {
-      MPI_Irecv(rank_recvhdr_flux_.data() + msg.hdr_offset, 3*msg.nentries, MPI_INT,
+      const int hdr_size = CheckedBoundaryProduct(
+          3, msg.nentries, "flux recv header length");
+      MPI_Irecv(rank_recvhdr_flux_.data() + msg.hdr_offset, hdr_size, MPI_INT,
                 msg.rank, meta_tag, comm_flux, &exch_reqs[r++]);
     }
     for (const auto &msg : send_flux_msgs_) {
-      MPI_Isend(rank_sendhdr_flux_.data() + msg.hdr_offset, 3*msg.nentries, MPI_INT,
+      const int hdr_size = CheckedBoundaryProduct(
+          3, msg.nentries, "flux send header length");
+      MPI_Isend(rank_sendhdr_flux_.data() + msg.hdr_offset, hdr_size, MPI_INT,
                 msg.rank, meta_tag, comm_flux, &exch_reqs[r++]);
     }
     if (!exch_reqs.empty()) {
-      MPI_Waitall(static_cast<int>(exch_reqs.size()), exch_reqs.data(),
-                  MPI_STATUSES_IGNORE);
+      MPI_Waitall(nexch, exch_reqs.data(), MPI_STATUSES_IGNORE);
     }
   }
 
@@ -507,7 +628,6 @@ void MeshBoundaryValues::BuildRankPackedFluxMetadata(const int nvars, const bool
   {
     const int nmb_max =
         std::max(pmy_pack->nmb_thispack, pmy_pack->pmesh->nmb_maxperrank);
-    const int map_len = nmb*nnghbr;
     recv_flx_agg_offset_ = DvceArray1D<int>("recv_flx_agg_offset", std::max(1, map_len));
     send_flx_agg_offset_ = DvceArray1D<int>("send_flx_agg_offset", std::max(1, map_len));
     auto recv_off_h = Kokkos::create_mirror_view(recv_flx_agg_offset_);
@@ -527,17 +647,18 @@ void MeshBoundaryValues::BuildRankPackedFluxMetadata(const int nvars, const bool
                     << __LINE__ << std::endl
                     << "Invalid rank-packed flux recv header from peer "
                     << msg.rank << std::endl;
-          std::exit(EXIT_FAILURE);
+          AbortBoundary();
         }
         if (lid < nmb) recv_off_h(lid*nnghbr + dn) = off;
-        off += dsize;
+        off = CheckedBoundaryCount(static_cast<std::int64_t>(off) + dsize,
+                                   "decoded flux recv payload offset");
       }
       if ((off - msg.offset) != msg.data_size) {
         std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
                   << std::endl << "Rank-packed flux payload from peer " << msg.rank
                   << " is " << (off - msg.offset) << " Reals but this rank sized its "
                   << "receive for " << msg.data_size << std::endl;
-        std::exit(EXIT_FAILURE);
+        AbortBoundary();
       }
     }
     for (const auto &entry : send_flux_entries_) {
@@ -552,13 +673,14 @@ void MeshBoundaryValues::BuildRankPackedFluxMetadata(const int nvars, const bool
 //----------------------------------------------------------------------------------------
 //! \fn void MeshBoundaryValues::InitializeBuffers
 //! \brief initialize each element of send/recv MeshBoundaryBuffers fixed-length arrays
+//! allocate_flux controls native flux storage; variable buffers are always allocated.
 //!
 //! NOTE: order of vector elements is crucial and cannot be changed.  It must match
 //! order of boundaries in nghbr vector
 //! NOTE2: work here cannot be done in MeshBoundaryValues constructor since it calls pure
 //! virtual functions that only get instantiated when the derived classes are constructed
 
-void MeshBoundaryValues::InitializeBuffers(const int nvar) {
+void MeshBoundaryValues::InitializeBuffers(const int nvar, bool allocate_flux) {
   // allocate memory for inflow BCs (but only if domain not strictly periodic)
   if (!(pmy_pack->pmesh->strictly_periodic)) {
     Kokkos::realloc(u_in, nvar, 6);
@@ -574,6 +696,9 @@ void MeshBoundaryValues::InitializeBuffers(const int nvar) {
     if (pmy_pack->pmesh->three_d) nfz = 2;
   }
 
+  // Size same-level buffers for coarse data only when CC pack/unpack appends it.
+  const bool append_coarse = is_z4c_ && pmy_pack->pmesh->multilevel;
+
   // initialize buffers used for uniform grid and SMR/AMR calculations
 
   // x1 faces; NeighborIndex = [0,...,7]
@@ -584,8 +709,8 @@ void MeshBoundaryValues::InitializeBuffers(const int nvar) {
         int indx = NeighborIndex(n,0,0,fy,fz);
         InitSendIndices(sendbuf[indx],n, 0, 0, fy, fz);
         InitRecvIndices(recvbuf[indx],n, 0, 0, fy, fz);
-        sendbuf[indx].AllocateBuffers(nmb, nvar, is_z4c_);
-        recvbuf[indx].AllocateBuffers(nmb, nvar, is_z4c_);
+        sendbuf[indx].AllocateBuffers(nmb, nvar, append_coarse, allocate_flux);
+        recvbuf[indx].AllocateBuffers(nmb, nvar, append_coarse, allocate_flux);
       }
     }
   }
@@ -599,8 +724,8 @@ void MeshBoundaryValues::InitializeBuffers(const int nvar) {
           int indx = NeighborIndex(0,m,0,fx,fz);
           InitSendIndices(sendbuf[indx],0, m, 0, fx, fz);
           InitRecvIndices(recvbuf[indx],0, m, 0, fx, fz);
-          sendbuf[indx].AllocateBuffers(nmb, nvar, is_z4c_);
-          recvbuf[indx].AllocateBuffers(nmb, nvar, is_z4c_);
+          sendbuf[indx].AllocateBuffers(nmb, nvar, append_coarse, allocate_flux);
+          recvbuf[indx].AllocateBuffers(nmb, nvar, append_coarse, allocate_flux);
         }
       }
     }
@@ -612,8 +737,8 @@ void MeshBoundaryValues::InitializeBuffers(const int nvar) {
           int indx = NeighborIndex(n,m,0,fz,0);
           InitSendIndices(sendbuf[indx],n, m, 0, fz, 0);
           InitRecvIndices(recvbuf[indx],n, m, 0, fz, 0);
-          sendbuf[indx].AllocateBuffers(nmb, nvar, is_z4c_);
-          recvbuf[indx].AllocateBuffers(nmb, nvar, is_z4c_);
+          sendbuf[indx].AllocateBuffers(nmb, nvar, append_coarse, allocate_flux);
+          recvbuf[indx].AllocateBuffers(nmb, nvar, append_coarse, allocate_flux);
         }
       }
     }
@@ -628,8 +753,8 @@ void MeshBoundaryValues::InitializeBuffers(const int nvar) {
           int indx = NeighborIndex(0,0,l,fx,fy);
           InitSendIndices(sendbuf[indx],0, 0, l, fx, fy);
           InitRecvIndices(recvbuf[indx],0, 0, l, fx, fy);
-          sendbuf[indx].AllocateBuffers(nmb, nvar, is_z4c_);
-          recvbuf[indx].AllocateBuffers(nmb, nvar, is_z4c_);
+          sendbuf[indx].AllocateBuffers(nmb, nvar, append_coarse, allocate_flux);
+          recvbuf[indx].AllocateBuffers(nmb, nvar, append_coarse, allocate_flux);
         }
       }
     }
@@ -641,8 +766,8 @@ void MeshBoundaryValues::InitializeBuffers(const int nvar) {
           int indx = NeighborIndex(n,0,l,fy,0);
           InitSendIndices(sendbuf[indx],n, 0, l, fy, 0);
           InitRecvIndices(recvbuf[indx],n, 0, l, fy, 0);
-          sendbuf[indx].AllocateBuffers(nmb, nvar, is_z4c_);
-          recvbuf[indx].AllocateBuffers(nmb, nvar, is_z4c_);
+          sendbuf[indx].AllocateBuffers(nmb, nvar, append_coarse, allocate_flux);
+          recvbuf[indx].AllocateBuffers(nmb, nvar, append_coarse, allocate_flux);
         }
       }
     }
@@ -654,8 +779,8 @@ void MeshBoundaryValues::InitializeBuffers(const int nvar) {
           int indx = NeighborIndex(0,m,l,fx,0);
           InitSendIndices(sendbuf[indx],0, m, l, fx, 0);
           InitRecvIndices(recvbuf[indx],0, m, l, fx, 0);
-          sendbuf[indx].AllocateBuffers(nmb, nvar, is_z4c_);
-          recvbuf[indx].AllocateBuffers(nmb, nvar, is_z4c_);
+          sendbuf[indx].AllocateBuffers(nmb, nvar, append_coarse, allocate_flux);
+          recvbuf[indx].AllocateBuffers(nmb, nvar, append_coarse, allocate_flux);
         }
       }
     }
@@ -667,8 +792,8 @@ void MeshBoundaryValues::InitializeBuffers(const int nvar) {
           int indx = NeighborIndex(n,m,l,0,0);
           InitSendIndices(sendbuf[indx],n, m, l, 0, 0);
           InitRecvIndices(recvbuf[indx],n, m, l, 0, 0);
-          sendbuf[indx].AllocateBuffers(nmb, nvar, is_z4c_);
-          recvbuf[indx].AllocateBuffers(nmb, nvar, is_z4c_);
+          sendbuf[indx].AllocateBuffers(nmb, nvar, append_coarse, allocate_flux);
+          recvbuf[indx].AllocateBuffers(nmb, nvar, append_coarse, allocate_flux);
         }
       }
     }

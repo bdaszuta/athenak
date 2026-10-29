@@ -8,6 +8,7 @@
 //! \file outputs.hpp
 //  \brief provides classes to handle ALL types of data output
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -134,6 +135,9 @@ static const char *var_choice[NOUTPUT_CHOICES] = {
 // forward declarations
 class Mesh;
 class ParameterInput;
+namespace z4c {
+class WaveExtractRWZ;
+}
 
 //----------------------------------------------------------------------------------------
 //! \struct OutputParameters
@@ -316,6 +320,26 @@ class HistoryOutput : public BaseTypeOutput {
   void LoadZ4cHistoryData(HistoryData *pdata, Mesh *pm);
   void LoadQuadrupoleHistoryData(HistoryData *pdata, Mesh *pm);
   void WriteOutputFile(Mesh *pm, ParameterInput *pin) override;
+};
+
+//----------------------------------------------------------------------------------------
+//! \class RWZOutput
+//! \brief Completed-time RWZ extraction with restart-persistent sample identity.
+//!
+//! The scheduling clock is distinct from the last successfully written time/cycle.
+//! The manager owns extraction storage; destruction is defined with its complete type.
+class RWZOutput : public BaseTypeOutput {
+ public:
+  RWZOutput(ParameterInput *pin, Mesh *pm, OutputParameters oparams);
+  ~RWZOutput() override;
+  void LoadOutputData(Mesh *pm) override;
+  void WriteOutputFile(Mesh *pm, ParameterInput *pin) override;
+
+ private:
+  std::unique_ptr<z4c::WaveExtractRWZ> rwz_;
+  Real last_written_time_ = 0, pending_time_ = 0;
+  int last_written_cycle_ = -1, pending_cycle_ = -1;
+  bool pending_ = false;
 };
 
 //----------------------------------------------------------------------------------------
