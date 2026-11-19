@@ -51,6 +51,11 @@ class CCE {
 
   // sphere for storing the indices, etc.
   std::vector<std::unique_ptr<GaussLegendreGrid>> grids;
+  std::vector<Real> radii;  // radius of each sphere (shell)
+
+  // quadrature weight * conj(Y_lm) at every angle, [(l*l+l+m)*nangles + angle]; the
+  // angles are the same on all spheres, so this is built once in the constructor
+  std::vector<Real> ylm_wr, ylm_wi;
 
  public:
   CCE(Mesh *const pm, ParameterInput *const pin, int index);

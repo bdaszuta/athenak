@@ -1,0 +1,188 @@
+<comment>
+problem   = calibration BBH with CCE worldtube dumps and Psi4 extraction
+reference = Bruegmann et al. 2008, PRD 77, 024027 (binary); AthenaK NR paper arXiv:2409.10383 Sec. IV.3
+#Some comments on the test run.
+# initial configuration conisits of Equal mass, non-spinning, 2.7 orbits, merger at t ~ 173, orbit about +z. Build usinf
+# PROBLEM=z4c/two_punctures/z4c_two_puncture
+#
+# CCE worldtubes (<cce>): for each i < num_radii, lapse, shift and g_ij are interpolated on
+# Gauss-Legendre spheres (l_max = num_l_modes) at num_radial_modes radii, the roots of U_N mapped
+# to [rin_i, rout_i], projected on Y_lm (a_lm = int f conj(Y_lm)) every cce_dt, and written to
+# cce/cce_r<i>_<time>.bin: header (int nr, int l_max, double time = state time, double rin,
+# double rout), Re then Im of a_lm [nr][10][(l_max+1)^2] (alp, betax..z, gxx, gxy, gxz, gyy, gyz,
+# gzz), trailer "AKCCEv2\0" + the nr radii. Converted to SpECTRE metric modal data (radial and
+# time derivatives) and run through PreprocessCceWorldtube (MetricModal, BufferDepth: Auto) and
+# CharacteristicExtract (CauchySecondOrder initial data).
+#
+# CCE Psi4_22 from R = 50, 100, 150, it agrees with the extrapolated Psi4 of the run to (1-4)e-3 in amplitude and phase at merger.
+# of all raidius used, R = 50 (dx 0.5) was cleanest; R = 100 and 150 picked up high-frequency noise near the
+# using refinement boundaries at r ~ 130-210: keep a worldtube well inside a uniformly refined zone.
+
+<job>
+basename  = bbh
+
+<mesh>
+nghost    = 4          # 6th-order finite differences
+nx1       = 128        # root dx = 16
+x1min     = -1024
+x1max     = 1024
+ix1_bc    = outflow
+ox1_bc    = outflow
+nx2       = 128
+x2min     = -1024
+x2max     = 1024
+ix2_bc    = outflow
+ox2_bc    = outflow
+nx3       = 128
+x3min     = -1024
+x3max     = 1024
+ix3_bc    = outflow
+ox3_bc    = outflow
+
+<meshblock>
+nx1       = 32
+nx2       = 32
+nx3       = 32
+
+<time>
+evolution  = dynamic
+integrator = rk4
+cfl_number = 0.35
+nlim       = -1
+tlim       = 450       # Psi4 peak at r = 150 at t ~ 325 (batchtools: @TLIM@)
+ndiag      = 10
+
+<mesh_refinement>
+refinement          = adaptive
+max_nmb_per_rank    = 600      # GPU arrays are allocated for this many blocks per rank (~64 MB each):
+                               # 1072 blocks at t = 0, 6000 once AMR has built the wave zone (first
+                               # ~60 cycles), ~6250 at most, 5776 after merger -> 16 ranks
+num_levels          = 10       # finest dx = 16/2^9 = 0.03125
+refinement_interval = 16
+
+<amr_criterion>
+method            = user       # calls the pgen's RefinementCondition = Z4c AMR of <z4c_amr>
+
+<z4c_amr>
+method            = tracker
+radius_0_rad      = 130.0      # dx = 0.5 for r < 130: worldtubes R = 50, 100; Psi4 spheres 50..120
+radius_0_reflevel = 5
+radius_1_rad      = 180.0      # dx = 1 for r < 180: worldtube R = 150, Psi4 sphere 150
+radius_1_reflevel = 4
+
+<refined_region1>
+level = 9
+x1min = 2.257
+x1max = 4.257
+x2min = -1.0
+x2max = 1.0
+x3min = -1.0
+x3max = 1.0
+
+<refined_region2>
+level = 9
+x1min = -4.257
+x1max = -2.257
+x2min = -1.0
+x2max = 1.0
+x3min = -1.0
+x3max = 1.0
+
+<z4c>
+lapse_harmonic  = 0.0
+lapse_oplog     = 2.0
+shift_eta       = 2.0
+diss            = 0.5
+chi_div_floor   = 0.00001
+damp_kappa1     = 0.00
+damp_kappa2     = 0.01
+## Psi4 (waveforms/rpsi4_{real,imag}_<r>.txt: r Psi4 modes l = 2..8; the time column labels the
+## state at t + dt). nlev 30 = 9002 points: mode leakage ~3e-4 of the (2,2) mode, use 60 for
+## precision work.
+nrad_wave_extraction = 6
+extraction_radius_0  = 50
+extraction_radius_1  = 60
+extraction_radius_2  = 80
+extraction_radius_3  = 100
+extraction_radius_4  = 120
+extraction_radius_5  = 150
+extraction_nlev      = 30
+waveform_dt          = 0.25
+## puncture trackers
+co_0_type       = BH
+co_0_x          = 3.257
+co_0_radius     = 1.0
+co_1_type       = BH
+co_1_x          = -3.257
+co_1_radius     = 1.0
+
+<cce>
+num_radii        = 3          # worldtubes R = 50, 100, 150
+cce_dt           = 0.25
+rin_0            = 49
+rout_0           = 51
+rin_1            = 99
+rout_1           = 101
+rin_2            = 149
+rout_2           = 151
+num_radial_modes = 6
+num_l_modes      = 12
+
+<problem>
+pgen_name = z4c_two_puncture
+verbose = false
+par_b = 3.257                  # half separation
+par_m_plus = 0.483             # bare masses
+par_m_minus = 0.483
+target_M_plus = 0.505          # not used with give_bare_mass = true
+target_M_minus = 0.505
+par_P_plus1 = 0.0
+par_P_plus2 = 0.133            # m+ at +x moves along +y: orbital angular momentum along +z
+par_P_plus3 = 0.0
+par_P_minus1 = 0.0
+par_P_minus2 = -0.133
+par_P_minus3 = 0.0
+par_S_plus1 = 0.0
+par_S_plus2 = 0.0
+par_S_plus3 = 0.0
+par_S_minus1 = 0.0
+par_S_minus2 = 0.0
+par_S_minus3 = 0.0
+center_offset1 = 0.0
+center_offset2 = 0.0
+center_offset3 = 0.0
+give_bare_mass = true
+npoints_A = 48
+npoints_B = 48
+npoints_phi = 32
+Newton_tol = 1e-10
+Newton_maxit = 5
+TP_epsilon = 0.0
+TP_Tiny = 0.0
+TP_Extend_Radius = 0
+adm_tol = 1e-10
+do_residuum_debug_output = false
+do_initial_debug_output = false
+solve_momentum_constraint = false
+initial_lapse_psi_exponent = -2.0
+swap_xz = false
+
+<output1>
+file_type = hst
+dt        = 1
+
+<output2>
+file_type = rst
+dt        = 100     
+
+<output3>
+file_type = bin
+variable  = z4c
+slice_x3  = 0
+dt        = 25
+
+<output4>
+file_type = bin
+variable  = con
+slice_x3  = 0
+dt        = 25

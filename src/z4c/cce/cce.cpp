@@ -11,10 +11,12 @@
 #include <sstream>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <memory>
 #include <utility>
 #include <string>
 #include <cstdio>
+#include <cstdlib>
 
 #ifdef MPI_PARALLEL
 #include <mpi.h>
@@ -54,11 +56,37 @@ CCE::CCE(Mesh *const pm, ParameterInput *const pin, int indx):
   nangle = ntheta*nphi;
   npoint = nangle*nr;
 
+  if (nr < 1) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+              << std::endl << "<cce> num_radial_modes must be >= 1" << std::endl;
+    exit(EXIT_FAILURE);
+  }
+
   // Calculate radius for the Gauss Legendre Spheres
   // and initialize them in a vector
   for (int k = 0; k < nr; ++k) {
     Real rad = ChebyshevSecondKindCollocationPoints(rin,rout,nr,k);
+    radii.push_back(rad);
     grids.push_back(std::make_unique<GaussLegendreGrid>(pmbp, ntheta, rad));
+  }
+
+  // Projection weights w*conj(Y_lm) at every angle, built once (angles and weights are
+  // the same on all spheres). With conj(Y_lm) the dump holds the usual coefficients
+  // a_lm = int f conj(Y_lm) dOmega of f = sum_lm a_lm Y_lm.
+  int nang = grids[0]->nangles;
+  ylm_wr.resize(num_angular_modes*nang);
+  ylm_wi.resize(num_angular_modes*nang);
+  for (int l = 0; l < num_l_modes+1; ++l) {
+    for (int m = -l; m < l+1 ; ++m) {
+      for (int ip = 0; ip < nang; ++ip) {
+        Real ylmR, ylmI;
+        SWSphericalHarm(&ylmR, &ylmI, l, m, 0, grids[0]->polar_pos.h_view(ip,0),
+                        grids[0]->polar_pos.h_view(ip,1));
+        Real weight = grids[0]->int_weights.h_view(ip);
+        ylm_wr[(l*l+l+m)*nang + ip] = weight*ylmR;
+        ylm_wi[(l*l+l+m)*nang + ip] = -weight*ylmI;
+      }
+    }
   }
 
   variable_to_dump.push_back(std::make_pair(pmbp->pz4c->I_Z4C_ALPHA, true));
@@ -77,13 +105,12 @@ CCE::~CCE() {}
 
 // Interpolate all fields to Gauss-Legendre Sphere
 void CCE::InterpolateAndDecompose(MeshBlockPack *pmbp) {
-  Real ylmR,ylmI;
-
   // interpolation indices and weights are refreshed by InterpolateToSphere() below
   // whenever AMR has moved the mesh since they were last built
 
   // raveled shape of array & counts for mpi
   int count = 10*nr*num_angular_modes;
+  int nang = grids[0]->nangles;
   // Dynamically allocate memory for the 4D array flattened into 1D
   Real* data_real = new Real[count];
   Real* data_imag = new Real[count];
@@ -95,29 +122,23 @@ void CCE::InterpolateAndDecompose(MeshBlockPack *pmbp) {
       } else {
         grids[k]->InterpolateToSphere(variable_to_dump[nvar].first,pmbp->padm->u_adm);
       }
-      for (int l = 0; l < num_l_modes+1; ++l) {
-        for (int m = -l; m < l+1 ; ++m) {
-          Real psilmR = 0.0;
-          Real psilmI = 0.0;
-          for (int ip = 0; ip < grids[k]->nangles; ++ip) {
-            Real theta = grids[k]->polar_pos.h_view(ip,0);
-            Real phi = grids[k]->polar_pos.h_view(ip,1);
-            Real data = grids[k]->interp_vals.h_view(ip);
-            Real weight = grids[k]->int_weights.h_view(ip);
-            // calculate spherical harmonics
-            SWSphericalHarm(&ylmR,&ylmI, l, m, 0, theta, phi);
-            psilmR += weight*data*ylmR;
-            psilmI += weight*data*ylmI;
-          }
-          data_real[k * 10 * num_angular_modes // first over the different radii
-                    + nvar * num_angular_modes // then over the variables
-                    + l*l+l+m]                 // lastly over the angular harmonic index
-                    = psilmR;
-          data_imag[k * 10 * num_angular_modes // first over the different radii
-                    + nvar * num_angular_modes // then over the variables
-                    + l*l+l+m]                 // lastly over the angular harmonic index
-                    = psilmI;
+      // project with the precomputed weights w*conj(Y_lm), mode index lm = l*l+l+m
+      for (int lm = 0; lm < num_angular_modes; ++lm) {
+        Real psilmR = 0.0;
+        Real psilmI = 0.0;
+        for (int ip = 0; ip < nang; ++ip) {
+          Real data = grids[k]->interp_vals.h_view(ip);
+          psilmR += data*ylm_wr[lm*nang + ip];
+          psilmI += data*ylm_wi[lm*nang + ip];
         }
+        data_real[k * 10 * num_angular_modes // first over the different radii
+                  + nvar * num_angular_modes // then over the variables
+                  + lm]                      // lastly over the angular harmonic index
+                  = psilmR;
+        data_imag[k * 10 * num_angular_modes // first over the different radii
+                  + nvar * num_angular_modes // then over the variables
+                  + lm]                      // lastly over the angular harmonic index
+                  = psilmI;
       }
     }
   }
@@ -136,16 +157,17 @@ void CCE::InterpolateAndDecompose(MeshBlockPack *pmbp) {
   #endif
 
   // Then write output file
-  // Open the file in binary write mode
+  // Z4c::CCEDump calls this after the update of the last RK stage, before the driver
+  // advances pmesh->time: the interpolated state is at time + dt
+  Real time = pmbp->pmesh->time + pmbp->pmesh->dt;
 
   if (0 == global_variable::my_rank) {
-    std::string filename = "cce/cce_";
-    std::stringstream strObj;
-    strObj << std::setfill('0') << std::setw(8) << pmbp->pmesh->time;
-    filename += strObj.str();
-    filename += ".bin";
+    // one file per shell and dump; the time with 6 decimals keeps the names distinct
+    char filename[64];
+    std::snprintf(filename, sizeof(filename), "cce/cce_r%d_%015.6f.bin", index, time);
 
-    FILE* cce_file = fopen(filename.c_str(), "wb");
+    // Open the file in binary write mode
+    FILE* cce_file = fopen(filename, "wb");
     if (cce_file == nullptr) {
       perror("Error opening file");
       return;
@@ -154,7 +176,7 @@ void CCE::InterpolateAndDecompose(MeshBlockPack *pmbp) {
     fwrite(&nr, sizeof(int), 1, cce_file);
     fwrite(&num_l_modes, sizeof(int), 1, cce_file);
     // write time
-    fwrite(&pmbp->pmesh->time, sizeof(Real), 1, cce_file);
+    fwrite(&time, sizeof(Real), 1, cce_file);
     // write inner and outer radial boundary
     fwrite(&rin, sizeof(Real), 1, cce_file);
     fwrite(&rout, sizeof(Real), 1, cce_file);
@@ -167,6 +189,11 @@ void CCE::InterpolateAndDecompose(MeshBlockPack *pmbp) {
     if (elementsWritten != static_cast<size_t>(count)) {
       perror("Error writing to file");
     }
+    // format tag and the radii of the shells; readers that read the two arrays above
+    // with fixed counts ignore these trailing bytes
+    const char tag[8] = {'A', 'K', 'C', 'C', 'E', 'v', '2', '\0'};
+    fwrite(tag, sizeof(char), 8, cce_file);
+    fwrite(radii.data(), sizeof(Real), nr, cce_file);
     // Close the file
     fclose(cce_file);
   }

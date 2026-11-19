@@ -12,10 +12,11 @@
 #include "globals.hpp"
 
 // kth collocation point for chebyshev polynomials of the second kind
+// (the N roots of U_N, k = 0..N-1)
 KOKKOS_INLINE_FUNCTION
 Real ChebyshevSecondKindCollocationPoints(Real xmin, Real xmax, int N, int k) {
   // over the interval of -1 to 1
-  Real x_k = std::cos( M_PI * (k + 1) / (N + 2));
+  Real x_k = std::cos( M_PI * (k + 1) / (N + 1));
   return  0.5 * ( (xmin - xmax) * x_k + (xmin + xmax));
 }
 

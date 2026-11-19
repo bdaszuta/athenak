@@ -197,9 +197,10 @@ void Z4c::WaveExtr(MeshBlockPack *pmbp) {
       outFile.open(filename, std::ios::out | std::ios::app);
       outFile2.open(filename2, std::ios::out | std::ios::app);
 
-      // first append time
-      outFile << pmbp->pmesh->time << "\t";
-      outFile2 << pmbp->pmesh->time << "\t";
+      // first append time (full precision: the default 6 significant digits resolve only
+      // 0.1 at t ~ 1e5)
+      outFile << std::setprecision(15) << pmbp->pmesh->time << "\t";
+      outFile2 << std::setprecision(15) << pmbp->pmesh->time << "\t";
 
       // append waveform
       for (int l = 2; l < lmax+1; ++l) {
