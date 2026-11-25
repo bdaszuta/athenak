@@ -92,31 +92,27 @@ Real OmegaLaw(Real rad, Real Omega_0, Real Omega_A) {
 
 //----------------------------------------------------------------------------------------
 // Vector potential for magnetic field initialization
-// A_phi dipole model: https://arxiv.org/abs/1004.2896
+// A_phi dipole model: https://arxiv.org/abs/1004.2896 (Takiwaki & Kotake 2011, eq. 3)
 //                      https://arxiv.org/abs/1403.1230
+// Orthonormal A_phi = (B0/2) r0^3 rcyl / (r^3 + r0^3): B = B0 z_hat for r << r0 and a
+// dipole of moment B0 r0^3 / 2 for r >> r0. Cartesian A = (A_phi / rcyl) (-y, x, 0).
 
 KOKKOS_INLINE_FUNCTION
 Real VectorPotential(Real xp, Real yp, Real zp,
                      Real B0_amp, Real B0_rad,
                      int component) {
-  Real const rad_cyl    = sqrt(SQR(xp) + SQR(yp));
-  Real const oo_rad_cyl = 1.0 / rad_cyl;
-  Real const rad        = sqrt(SQR(xp) + SQR(yp) + SQR(zp));
+  Real const rad = sqrt(SQR(xp) + SQR(yp) + SQR(zp));
 
-  // Spherical-to-Cartesian Jacobian: only azimuthal component contributes
-  Real const dphdx = -yp * SQR(oo_rad_cyl);
-  Real const dphdy =  xp * SQR(oo_rad_cyl);
-  Real const dphdz = 0.0;
-
-  // A_phi dipole
-  Real Aph = 0.0;
+  // A_phi / rcyl, regular on the axis
+  Real f = 0.0;
   if (B0_amp > 0.0 && B0_rad > 0.0) {
-    Aph = B0_amp * rad_cyl / (pow(rad, 3) + pow(B0_rad, 3));
+    Real const r03 = pow(B0_rad, 3);
+    f = 0.5 * B0_amp * r03 / (pow(rad, 3) + r03);
   }
 
-  Real const Ax = dphdx * Aph;
-  Real const Ay = dphdy * Aph;
-  Real const Az = dphdz * Aph;
+  Real const Ax = -yp * f;
+  Real const Ay =  xp * f;
+  Real const Az = 0.0;
 
   if (component == 1) return Ax;
   if (component == 2) return Ay;
